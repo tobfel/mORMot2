@@ -9789,6 +9789,7 @@ end;
 procedure TTestCoreProcess.XmlToVariant;
 const
   XMLOPT: TJsonToXmlOptions = [jxoAttribute, jxoText];
+  SELFOPT: TJsonToXmlOptions = [jxoAttribute, jxoText, jxoSelfClosed];
 var
   doc: variant;
 begin
@@ -9899,6 +9900,45 @@ begin
   CheckEqual(VariantToXml(doc, ''), '<a><b>1</b><b>2</b><c d="x">t</c></a>');
   mormot.core.fmt.XmlToVariant('<a><b i="1">x</b><b i="2">y</b></a>', doc);
   CheckEqual(VariantToXml(doc, ''), '<a><b i="1">x</b><b i="2">y</b></a>');
+  // jxoSelfClosed writes '<name/>' for elements with no text nor sub-element
+  CheckEqual(JsonToXml('{"a":""}', '', '', SELFOPT), '<a/>');
+  CheckEqual(JsonToXml('{"a":null}', '', '', SELFOPT), '<a/>');
+  CheckEqual(JsonToXml('{"a":{}}', '', '', SELFOPT), '<a/>');
+  CheckEqual(JsonToXml('{"a":{"@d":"x"}}', '', '', SELFOPT), '<a d="x"/>');
+  CheckEqual(JsonToXml('{"a":{"@d":"x","#text":""}}', '', '', SELFOPT),
+    '<a d="x"/>');
+  CheckEqual(JsonToXml('{"a":{"b":"","c":"1"}}', '', '', SELFOPT),
+    '<a><b/><c>1</c></a>');
+  CheckEqual(JsonToXml('{"item":[{"@id":"1"},{"@id":"2"}]}', '', '', SELFOPT),
+    '<item id="1"/><item id="2"/>');
+  CheckEqual(JsonToXml('{"a":["",""]}', '', '', SELFOPT), '<a/><a/>');
+  // non-void elements are not affected by jxoSelfClosed
+  CheckEqual(JsonToXml('{"a":{"@d":"x","#text":"t"}}', '', '', SELFOPT),
+    '<a d="x">t</a>');
+  CheckEqual(JsonToXml('{"a":{"b":"","#text":"pre post"}}', '', '', SELFOPT),
+    '<a><b/>pre post</a>');
+  // VariantToXml() supports jxoSelfClosed the very same way
+  CheckEqual(VariantToXml(_Json('{"a":""}'), '', '', SELFOPT), '<a/>');
+  CheckEqual(VariantToXml(_Json('{"a":null}'), '', '', SELFOPT), '<a/>');
+  CheckEqual(VariantToXml(_Json('{"a":{}}'), '', '', SELFOPT), '<a/>');
+  CheckEqual(VariantToXml(_Json('{"a":{"@d":"x"}}'), '', '', SELFOPT),
+    '<a d="x"/>');
+  CheckEqual(VariantToXml(_Json('{"a":{"@d":"x","#text":""}}'), '', '', SELFOPT),
+    '<a d="x"/>');
+  CheckEqual(VariantToXml(_Json('{"a":{"b":"","c":"1"}}'), '', '', SELFOPT),
+    '<a><b/><c>1</c></a>');
+  CheckEqual(VariantToXml(_Json('{"a":{"b":"1","@d":"x"}}'), '', '', SELFOPT),
+    '<a d="x"><b>1</b></a>');
+  CheckEqual(VariantToXml(_Json('{"item":[{"@id":"1"},{"@id":"2"}]}'), '', '',
+    SELFOPT), '<item id="1"/><item id="2"/>');
+  CheckEqual(VariantToXml(_Json('{"a":{"@d":"x","#text":"t"}}'), '', '', SELFOPT),
+    '<a d="x">t</a>');
+  // both forms are read back as the very same content
+  CheckEqual(XmlToJson(JsonToXml('{"a":{"@d":"x"}}', '', '', SELFOPT)),
+    '{"a":{"@d":"x"}}');
+  CheckEqual(XmlToJson(VariantToXml(_Json('{"a":{"@d":"x"}}'), '', '', SELFOPT)),
+    '{"a":{"@d":"x"}}');
+  CheckEqual(JsonToXml(XmlToJson('<a d="x"/>'), '', '', SELFOPT), '<a d="x"/>');
 end;
 
 procedure TTestCoreProcess.XmlParserConsume;
