@@ -9328,6 +9328,7 @@ var
 begin
   // first try to catch the EXmlException (default behavior)
   ok := false;
+  TSynLog.Family.ExceptionIgnoreCurrentThread := true;
   try
     p.Init(Xml, Options);
     Check(p.LastError = xpeNone);
@@ -9338,8 +9339,9 @@ begin
     end;
   except
     on EXmlException do
-      ok := true;
+      ok := Check(p.LastError = Expected, Context);
   end;
+  TSynLog.Family.ExceptionIgnoreCurrentThread := false;
   Check(ok, Context);
   CheckEqual(ord(p.LastError), ord(Expected), XML_ERROR[Expected]);
   // check properly return xtError with xpoNoException option
@@ -9562,7 +9564,7 @@ var
       CheckEqual(x.Position, length(Xml), Context);
     except
       on E: EXmlException do
-        err := StringToUtf8(E.Message);
+        StringToUtf8(E.Message, err);
     end;
     CheckEqual(err, '', Context);
   end;
@@ -9574,15 +9576,17 @@ var
   begin
     result := 0;
     Reason := '';
+    TSynLog.Family.ExceptionIgnoreCurrentThread := true;
     try
       x.Init(Xml);
       while x.ParseNext <> xtEof do
         if x.Kind = xtElementStart then
           inc(result);
     except
-      on E: EXmlException do
-        Reason := StringToUtf8(E.Message);
+      on E: Exception do
+        StringToUtf8(E.Message, Reason);
     end;
+    TSynLog.Family.ExceptionIgnoreCurrentThread := false;
   end;
 
   procedure NoTerm(const Xml: RawUtf8; const Context: string);
@@ -9835,6 +9839,9 @@ begin
   CheckEqual(XmlToJson('<a>false</a>', [xpoVariantGuessType]), '{"a":false}');
   CheckEqual(XmlToJson('<a>false</a><a>7</a><a>hello</a>',
     [xpoVariantGuessType]), '{"a":[false,7,"hello"]}');
+  // validate dvoInternNames
+  CheckEqual(XmlToJson('<a><a/></a>', [], JSON_XML + [dvoInternNames]),
+    '{"a":{"a":""}}');
   // TryXmlToVariant
   Check(TryXmlToVariant('<a><b>1</b></a>', doc) = xpeNone, 'try ok');
   CheckEqual(VariantSaveJson(doc), '{"a":{"b":"1"}}');
@@ -9989,9 +9996,9 @@ begin
     catalog.AddItem(doc);
   end;
   CheckEqual(catalog.ToJson,
-    '["Trap for Next(''catalog'')",{"book":[{"@id":"1","title":"mORMot","comme' +
-     'nt":{"@lng":"en","#text":"Nice species"},"price":"42"},{"@id":"2","title"' +
-     ':"Delphi","price":"99"}],"ignore":"nothing","pending":""}]');
+   '[{"#text":"Trap for Next(''catalog'')"},{"book":[{"@id":"1","title":"mORM' +
+   'ot","comment":{"@lng":"en","#text":"Nice species"},"price":"42"},{"@id":"' +
+   '2","title":"Delphi","price":"99"}],"ignore":"nothing","pending":""}]');
   Check(not x.Rewind.Find('//katalog'));
   // Structured Streaming search with Find/ForEach
   Check(x.Find('/root/catalog'));
@@ -10027,6 +10034,13 @@ begin
       inc(n);
     end;
   CheckEqual(n, 2);
+  x.Init('<r><c>trap</c><c><i>1</i></c></r>');
+  while x.Find('//c') do
+  begin
+    x.Consume(doc);
+    dec(n);
+  end;
+  CheckEqual(n, 0);
 end;
 
 

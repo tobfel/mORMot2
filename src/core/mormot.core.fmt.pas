@@ -347,7 +347,7 @@ type
     /// raw recursive conversion of the current level into a TDocVariant object
     // - fill from attributes and content, until the matching xtElementEnd
     // - the supplied Dest^ should have been just allocated or ZeroClear()
-    procedure ToDocVariant(Dest: PDocVariantData);
+    procedure ToVariant(Dest: PDocVariantData);
   public
     /// the current token kind, as set by the last ParseNext call
     Kind: TXmlToken;
@@ -541,8 +541,8 @@ function TryXmlToVariant(const Xml: RawUtf8; var Doc: variant;
 /// convert XML UTF-8 content into a JSON object
 // - just a wrapper around XmlToVariant() + TDocVariantData.ToJson
 // - see JsonToXml() for the reverse process
-function XmlToJson(const Xml: RawUtf8;
-  ParseOptions: TXmlParserOptions = []): RawUtf8;
+function XmlToJson(const Xml: RawUtf8; ParseOptions: TXmlParserOptions = [];
+  Options: TDocVariantOptions = JSON_XML): RawUtf8;
 
 /// append a TDocVariant document as XML content into a TTextWriter
 // - this is the reverse of XmlToVariant(), processing the TDocVariantData
@@ -2721,12 +2721,14 @@ var
 begin
   n[0] := '@'; // note: Dest^ interning may append an ending #0 -> high>255
   MoveFast(Name.Text^, n[1], Name.Len); // we know Name.Len <= 255
-  v := pointer(Dest^.NewItem(@n, Name.Len + 1));
+  inc(Name.Len);
+  n[Name.Len] := #0; // no copy needed in TRawUtf8InterningSlot.UniqueFromBuffer
+  v := pointer(Dest^.NewItem(@n, Name.Len));
   v^.VType := varString;
   ValueAppendToUtf8(RawUtf8(v^.VAny));
 end;
 
-procedure TXmlParser.ToDocVariant(Dest: PDocVariantData);
+procedure TXmlParser.ToVariant(Dest: PDocVariantData);
 var
   txt, v: pointer;
 begin
@@ -2747,7 +2749,7 @@ begin
         begin
           v := Dest^.NewSibling(Name.Text, Name.Len);
           PCardinal(v)^ := PCardinal(Dest)^; // same VType + VOptions
-          ToDocVariant(v);
+          ToVariant(v);
         end;
       xtText,
       xtCData:
@@ -2823,13 +2825,6 @@ begin
   result := true;
 end;
 
-function TXmlParser.Consume(const ElementName: RawUtf8; var Doc: TDocVariantData;
-   DocOptions: TDocVariantOptions): boolean;
-begin
-  result := Find(pointer(ElementName)) and
-            Consume(Doc, DocOptions);
-end;
-
 function TXmlParser.FindAny(ElementName: PUtf8Char; ElementLen: PtrInt): boolean;
 begin
   result := false;
@@ -2886,13 +2881,22 @@ end;
 
 function TXmlParser.Consume(var Doc: TDocVariantData;
   DocOptions: TDocVariantOptions): boolean;
+var
+  tmp: TSynVarData;
 begin
   TSynVarData(Doc).VType := _VType(DocOptions, dvObject); // fast Init()
   Doc.Void; // as required by ToDocVariant and to allow several Consume() calls
   result := false;
   if Kind <> xtElementStart then
     exit;
-  ToDocVariant(@Doc); // recursively fill Doc with the nested content
+  ToVariant(@Doc); // recursively fill Doc with the nested content
+  if Doc.VarType = varString then
+  begin
+    tmp := TSynVarData(Doc);
+    Doc.Init(DocOptions);                // this method should set a TDocVariant
+    Doc.AddValue('#text', variant(tmp)); // return {"#text":".."}
+    FastAssignNew(tmp.VAny);             // manual tmp memory management
+  end;
   result := Kind in [xtEof, xtElementEnd];
 end;
 
@@ -2914,6 +2918,13 @@ begin
         ValueAppendToUtf8(Dest);
     end;
   result := true;
+end;
+
+function TXmlParser.Consume(const ElementName: RawUtf8; var Doc: TDocVariantData;
+   DocOptions: TDocVariantOptions): boolean;
+begin
+  result := Find(pointer(ElementName)) and
+            Consume(Doc, DocOptions);
 end;
 
 function TXmlParser.GetU(Path: PUtf8Char; var V: RawUtf8): boolean;
@@ -2939,7 +2950,7 @@ begin
   x.Init(pointer(Xml), length(Xml), ParseOptions + [xpoNoException]);
   ZeroClear(@Doc); // as required by ToDocVariant
   PCardinal(@Doc)^ := _VType(DocOptions, dvObject); // fast Init() of root
-  x.ToDocVariant(@Doc);
+  x.ToVariant(@Doc);
   result := x.LastError;
 end;
 
@@ -2962,12 +2973,12 @@ begin
     TDocVariantData(Doc).Clear;
 end;
 
-function XmlToJson(const Xml: RawUtf8;
-  ParseOptions: TXmlParserOptions): RawUtf8;
+function XmlToJson(const Xml: RawUtf8; ParseOptions: TXmlParserOptions;
+  Options: TDocVariantOptions): RawUtf8;
 var
   doc: variant;
 begin
-  XmlToVariant(Xml, doc, ParseOptions);
+  XmlToVariant(Xml, doc, ParseOptions, Options);
   VariantSaveJson(doc, twJsonEscape, result);
 end;
 
