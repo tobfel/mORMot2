@@ -182,6 +182,7 @@ begin
     TTestSqliteMemory,
     TTestExternalDatabase,
     TTestDuckDB,
+    TTestDuckDBProxy,
     TTestClientServerAccess,
     TTestMultiThreadProcess
   ]);

@@ -212,6 +212,7 @@ mORMot2 follows a **strict layered architecture** with 14 source folders organiz
     - `mormot.db.sql.sqlite3` - SQLite3 SQL connector
     - `mormot.db.sql.postgres` - PostgreSQL SQL connector
     - `mormot.db.sql.duckdb` - DuckDB SQL connector (embedded analytics engine)
+    - `mormot.db.sql.duckdbproxy` - DuckDB from 32-bit clients via the 64-bit duckdbproxy
     - `mormot.db.sql.oracle` - Oracle SQL connector
     - `mormot.db.sql.odbc` - ODBC SQL connector
     - `mormot.db.sql.oledb` - OLE DB SQL connector
