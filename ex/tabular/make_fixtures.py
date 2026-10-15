@@ -36,11 +36,17 @@ wb.save(os.path.join(out, "date1904.xlsx"))
 
 # 3. handcrafted: prefixed namespaces, inlineStr, rich text + rPh, str/e/b
 #    types, cells without r attribute, _x000D_ escapes, absolute targets
+#    - intentionally minimal (no styles/docProps) but with the content type
+#    overrides required so that Excel/LibreOffice can open it too
 M = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 P = 'http://schemas.openxmlformats.org/package/2006/relationships'
+CT = 'application/vnd.openxmlformats-officedocument.spreadsheetml.'
 files = {
- '[Content_Types].xml': '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/></Types>',
+ '[Content_Types].xml': '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+   f'<Override PartName="/custom/book.xml" ContentType="{CT}sheet.main+xml"/>'
+   f'<Override PartName="/custom/sheets/s.xml" ContentType="{CT}worksheet+xml"/>'
+   f'<Override PartName="/custom/strings.xml" ContentType="{CT}sharedStrings+xml"/></Types>',
  '_rels/.rels': f'<?xml version="1.0"?><Relationships xmlns="{P}"><Relationship Id="rId1" Type="{R}/officeDocument" Target="/custom/book.xml"/></Relationships>',
  'custom/book.xml': f'<?xml version="1.0"?><x:workbook xmlns:x="{M}" xmlns:r="{R}"><x:sheets><x:sheet name="Hand &amp; Made" sheetId="7" r:id="rIdS"/></x:sheets></x:workbook>',
  'custom/_rels/book.xml.rels': f'<?xml version="1.0"?><Relationships xmlns="{P}"><Relationship Id="rIdS" Type="{R}/worksheet" Target="sheets/s.xml"/><Relationship Id="rIdT" Type="{R}/sharedStrings" Target="../custom/strings.xml"/></Relationships>',
@@ -61,7 +67,7 @@ line2 _x005F_x0041_ &lt;tag&gt;</x:t></x:si>
   <x:row r="3">
    <x:c r="A3" t="s"><x:v>0</x:v></x:c>
    <x:c r="B3" t="s"><x:v>1</x:v></x:c>
-   <x:c r="D3" t="str"><x:f>CONCAT("a","b")</x:f><x:v>ab</x:v></x:c>
+   <x:c r="D3" t="str"><x:f>"a"&amp;"b"</x:f><x:v>ab</x:v></x:c>
   </x:row>
   <x:row r="4">
    <x:c r="A4" t="b"><x:v>1</x:v></x:c>
