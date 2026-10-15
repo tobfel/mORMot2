@@ -202,7 +202,7 @@ const
 
   /// possible error codes for sqlite_exec() and sqlite3.step()
   // - as verified by sqlite3_check()
-  SQLITE_ERRORS = [SQLITE_ERROR .. SQLITE_ROW-1];
+  SQLITE_ERRORS = [SQLITE_ERROR .. SQLITE_ROW - 1];
 
 
   /// The sqlite3.load_extension() interface loads an extension into a single database connection.
@@ -2657,7 +2657,7 @@ type
     // - SQL must contains an UTF-8 encoded null-terminated string query
     // - SQL_bytes contains -1 (to stop at the null char) or the number of bytes in
     // the input string, including the null terminator
-    // - Return SQLITE_OK on success or an error code - see SQLITE_* and sqlite3.errmsg()
+    // - return SQLITE_OK on success or an error code - see SQLITE_* and sqlite3.errmsg()
     // - S will contain an handle of the resulting statement (an opaque sqlite3.stmt
     // object) on success, or will 0 on error - the calling procedure is responsible
     // for deleting the compiled SQL statement using sqlite3.finalize() after it has
@@ -4291,7 +4291,7 @@ type
     DB: TSqlite3DB;
     /// create the exception, getting the message from DB
     constructor Create(aDB: TSqlite3DB; aErrorCode: integer;
-      const aSql: RawUtf8); reintroduce; overload;
+      const aContext: RawUtf8); reintroduce; overload;
   published
     /// the corresponding error code, e.g. 21 (for SQLITE_MISUSE)
     property ErrorCode: integer
@@ -4512,7 +4512,7 @@ type
     // - Close is always called internally
     // - raise an ESqlite3Exception on any error
     procedure Execute(aDB: TSqlite3DB; const aSql: RawUtf8;
-      out aValue: RawUtf8); overload;
+      var aValue: RawUtf8); overload;
     /// Execute a SQL statement to return TEXT from the aSql UTF-8 encoded string
     // - Execute the first statement in aSql
     // - this statement must get (at least) one field/column result of TEXT
@@ -4916,7 +4916,6 @@ type
     fFileDefaultCacheSize: integer;
     fIsMemory: boolean;
     fPassword: SpiUtf8;
-    fTransactionActive: boolean;
     /// if not nil, cache is used - see UseCache property
     fCache: TSynCache;
     fInternalState: PCardinal;
@@ -4926,8 +4925,8 @@ type
     fBackupBackgroundLastTime: RawUtf8;
     fBackupBackgroundLastFileName: TFileName;
     fUseCacheSize: integer;
-    fStatementMaxMemory: PtrUInt;
     fLogResultMaximumSize: integer;
+    fStatementMaxMemory: PtrUInt;
     fLog: TSynLogClass;
     /// store TSqlDataBaseSQLFunction instances
     fSqlFunctions: TSynObjectList;
@@ -4955,6 +4954,9 @@ type
     function GetBackupBackgroundInProcess: boolean;
     function SqlShouldBeLogged(const aSql: RawUtf8): boolean;
     function GetSqlite3Library: TSqlite3Library; // class function = bug in D2005
+    function LockedGetTransactionActive: boolean;
+    function GetTransactionActive: boolean;
+    procedure LockedExecute(const aSql: RawUtf8);
   public
     /// enter the internal mutex: called before any DB access
     // - provide the SQL statement about to be executed: handle proper caching
@@ -5071,7 +5073,7 @@ type
     // - this statement must get a one field/column result of TEXT in aValue
     // - raise an ESqlite3Exception on any error
     procedure Execute(const aSql: RawUtf8;
-      out aValue: RawUtf8; NoLog: boolean = false); overload;
+      var aValue: RawUtf8; NoLog: boolean = false); overload;
     /// Execute one SQL statements in aSql UTF-8 encoded string
     // - can be prepared with TransactionBegin()
     // - raise no Exception on error, but returns FALSE in such case
@@ -5163,6 +5165,13 @@ type
     procedure RegisterSQLFunction(aDynArrayTypeInfo: PRttiInfo;
       aCompare: TDynArraySortCompare;
       const aFunctionName: RawUtf8 = ''); overload;
+    /// load a trusted SQLite extension shared library
+    // - aPath is a local filename, including its .dll/.so/.dylib suffix
+    // - temporarily enables the C extension-loading API if necessary
+    // - never enables the SQL load_extension() function
+    // - restores the previous C-API loading state afterwards
+    // - raises ESqlite3Exception on error
+    procedure LoadExtension(const aPath: TFileName; const aEntryPoint: RawUtf8 = '');
 
     /// open a BLOB incrementally for read[/write] access
     // - find a BLOB located in row RowID, column ColumnName, table TableName
@@ -5322,9 +5331,11 @@ type
     // - default is 16MB
     property UseCacheSize: integer
       read fUseCacheSize write fUseCacheSize;
-    /// return TRUE if a Transaction begun
+    /// TRUE if SQLite has an active transaction on this connection
+    // - reflects the actual SQLite state, even after SQL errors
+    // - also detects transactions started with direct SQL
     property TransactionActive: boolean
-      read fTransactionActive;
+      read GetTransactionActive;
     /// sets a busy handler that sleeps for a specified amount of time
     // (in milliseconds) when a table is locked, before returning an error
     // - let SQLite3 intercept SQLITE_BUSY errors using busy_timeout() handler
@@ -5791,14 +5802,14 @@ end;
 { ESqlite3Exception }
 
 constructor ESqlite3Exception.Create(aDB: TSqlite3DB; aErrorCode: integer;
-  const aSql: RawUtf8);
+  const aContext: RawUtf8);
 var
   er: integer;
 begin
   fErrorCode := aErrorCode;
   fSQLite3ErrorCode := sqlite3_resultToErrorCode(aErrorCode);
   FormatUtf8('Error % (%) [%] using %', [ErrorCodeToText(SQLite3ErrorCode),
-    aErrorCode, aSql, sqlite3.VersionText], fMessageUtf8);
+    aErrorCode, aContext, sqlite3.VersionText], fMessageUtf8);
   if aDB = 0 then
     fMessageUtf8 := fMessageUtf8 + ' with aDB=nil'
   else
@@ -6731,62 +6742,6 @@ end;
 
 { TSqlDataBase }
 
-function TSqlDataBase.Blob(const DBName, TableName, ColumnName: RawUtf8;
-  RowID: Int64; ReadWrite: boolean): TSqlBlobStream;
-begin
-  if self = nil then
-  begin
-    result := nil;
-    exit; // avoid GPF in case of call from a static-only server
-  end;
-  Lock;
-  try
-    if RowID = 0 then
-      RowID := sqlite3.last_insert_rowid(DB); // warning: not multi-thread safe
-    result := TSqlBlobStream.Create(DB, DBName, TableName, ColumnName, RowID, ReadWrite);
-  finally
-    UnLock;
-  end;
-end;
-
-procedure TSqlDataBase.RollBack;
-begin
-  if (self = nil) or
-     not fTransactionActive then
-    exit;
-  Execute('ROLLBACK TRANSACTION;');
-  fTransactionActive := false;
-end;
-
-procedure TSqlDataBase.TransactionBegin(aBehavior: TSqlDataBaseTransactionBehaviour);
-const
-  TBTOKENS: array[TSqlDataBaseTransactionBehaviour] of RawUtf8 = (
-    // see http://www.sqlite.org/lang_transaction.html
-    '', 'IMMEDIATE ', 'EXCLUSIVE ');
-begin
-  if self = nil then
-    exit; // avoid GPF in case of call from a static-only server
-  if fTransactionActive then
-  try
-    Execute('ROLLBACK TRANSACTION;');
-  finally
-    fTransactionActive := false;
-  end;
-  Execute('BEGIN ' + TBTOKENS[aBehavior] + 'TRANSACTION;');
-  fTransactionActive := true;
-end;
-
-procedure TSqlDataBase.Commit;
-begin
-  if (Self <> nil) and
-     fTransactionActive then
-  try
-    Execute('COMMIT TRANSACTION;');
-  finally
-    fTransactionActive := false;
-  end;
-end;
-
 constructor TSqlDataBase.Create(
   const aFileName: TFileName; const aPassword: SpiUtf8;
   aOpenV2Flags, aDefaultCacheSize, aDefaultPageSize: integer);
@@ -6862,6 +6817,70 @@ begin
   inherited Destroy;
 end;
 
+function TSqlDataBase.Blob(const DBName, TableName, ColumnName: RawUtf8;
+  RowID: Int64; ReadWrite: boolean): TSqlBlobStream;
+begin
+  if self = nil then
+  begin
+    result := nil;
+    exit; // avoid GPF in case of call from a static-only server
+  end;
+  Lock;
+  try
+    if RowID = 0 then
+      RowID := sqlite3.last_insert_rowid(DB); // warning: not multi-thread safe
+    result := TSqlBlobStream.Create(DB, DBName, TableName, ColumnName, RowID, ReadWrite);
+  finally
+    UnLock;
+  end;
+end;
+
+procedure TSqlDataBase.RollBack;
+begin
+  if self = nil then
+    exit;
+  LockAndFlushCache;
+  try
+    if LockedGetTransactionActive then
+      LockedExecute('ROLLBACK TRANSACTION;');
+  finally
+    UnLock;
+  end;
+end;
+
+procedure TSqlDataBase.TransactionBegin(
+  aBehavior: TSqlDataBaseTransactionBehaviour);
+const
+  TB_TOKENS: array[TSqlDataBaseTransactionBehaviour] of RawUtf8 = (
+    // see http://www.sqlite.org/lang_transaction.html
+    '', 'IMMEDIATE ', 'EXCLUSIVE ');
+begin
+  if self = nil then
+    exit;
+  LockAndFlushCache;
+  try
+    // regular mORMot behavior: discard any previous unfinished transaction
+    if LockedGetTransactionActive then
+      LockedExecute('ROLLBACK TRANSACTION;');
+    LockedExecute(Join(['BEGIN ', TB_TOKENS[aBehavior], 'TRANSACTION;']));
+  finally
+    UnLock;
+  end;
+end;
+
+procedure TSqlDataBase.Commit;
+begin
+  if self = nil then
+    exit;
+  LockAndFlushCache;
+  try
+    if LockedGetTransactionActive then
+      LockedExecute('COMMIT TRANSACTION;');
+  finally
+    UnLock;
+  end;
+end;
+
 function TSqlDataBase.SqlShouldBeLogged(const aSql: RawUtf8): boolean;
 begin
   result := fLog.HasLevel([sllSQL]) and
@@ -6887,7 +6906,7 @@ begin
   end;
 end;
 
-procedure TSqlDataBase.Execute(const aSql: RawUtf8);
+procedure TSqlDataBase.LockedExecute(const aSql: RawUtf8);
 var
   R: TSqlRequest;
   start: Int64;
@@ -6895,13 +6914,19 @@ begin
   if self = nil then
     exit; // avoid GPF in case of call from a static-only server
   QueryPerformanceMicroSeconds(start);
+  R.Execute(DB, aSql);
+  fLog.Add.Log(sllSQL, '% % %', [MicroSecFrom(start), FileNameWithoutPath, aSql], self);
+end;
+
+procedure TSqlDataBase.Execute(const aSql: RawUtf8);
+begin
+  if self = nil then
+    exit; // avoid GPF in case of call from a static-only server
   Lock(aSql); // run one statement -> we can trust IsSelect()
   try
-    R.Execute(DB, aSql);
+    LockedExecute(aSql);
   finally
     UnLock;
-    fLog.Add.Log(sllSQL, '% % %',
-      [MicroSecFrom(start), FileNameWithoutPath, aSql], self);
   end;
 end;
 
@@ -6949,11 +6974,12 @@ begin
 end;
 
 procedure TSqlDataBase.Execute(const aSql: RawUtf8;
-  out aValue: RawUtf8; NoLog: boolean);
+  var aValue: RawUtf8; NoLog: boolean);
 var
   R: TSqlRequest;
   start: Int64;
 begin
+  FastAssignNew(aValue);
   if self = nil then
     exit; // avoid GPF in case of call from a static-only server
   if not NoLog then
@@ -6991,28 +7017,24 @@ end;
 
 function TSqlDataBase.ExecuteNoExceptionInt64(const aSql: RawUtf8): Int64;
 begin
-  if (self = nil) or
-     (DB = 0) then
-    result := 0
-  else
-  try
-    Execute(aSql, result, true);
-  except
-    result := 0;
-  end;
+  result := 0;
+  if (self <> nil) and
+     (DB <> 0) then
+    try
+      Execute(aSql, result, true);
+    except
+    end;
 end;
 
 function TSqlDataBase.ExecuteNoExceptionUtf8(const aSql: RawUtf8): RawUtf8;
 begin
-  if (self = nil) or
-     (DB = 0) then
-    FastAssignNew(result)
-  else
-  try
-    Execute(aSql, result, true);
-  except
-    FastAssignNew(result);
-  end;
+  FastAssignNew(result);
+  if (self <> nil) and
+     (DB <> 0) then
+    try
+      Execute(aSql, result, true);
+    except
+    end;
 end;
 
 function TSqlDataBase.ExecuteJson(const aSql: RawUtf8; Expand: boolean;
@@ -7191,6 +7213,25 @@ begin
         FreeAndNil(fCache);
 end;
 
+function TSqlDataBase.LockedGetTransactionActive: boolean;
+begin
+  result := (fDB <> 0) and
+            (sqlite3.get_autocommit(fDB) = 0);
+end;
+
+function TSqlDataBase.GetTransactionActive: boolean;
+begin
+  result := false;
+  if self = nil then
+    exit;
+  fSafe.Lock;
+  try
+    result := LockedGetTransactionActive;
+  finally
+    fSafe.UnLock;
+  end;
+end;
+
 function IsCacheable(const aSql: RawUtf8): boolean;
 begin
   result := IsSelect(pointer(aSql)) and
@@ -7287,6 +7328,63 @@ begin
     fCache.AddOrUpdate(aSql, aJsonResult, aResultCount);
   finally
     fSafe.UnLock; // on non-concurent calls, this API is very fast
+  end;
+end;
+
+procedure TSqlDataBase.LoadExtension(const aPath: TFileName;
+  const aEntryPoint: RawUtf8);
+var
+  bak, enabled, res: integer;
+  fn: RawUtf8;
+  msg: PUtf8Char;
+begin
+  if self = nil then
+    exit;
+  if aPath = '' then
+    ESqlite3Exception.RaiseUtf8('%.LoadExtension: missing filename', [self]);
+  fLog.Add.Log(sllSQL, 'LoadExtension % [%]', [aPath, aEntryPoint], self);
+  LockAndFlushCache;
+  try
+    if (fDB = 0) or
+       (sqlite3 = nil) then
+      ESqlite3Exception.RaiseUtf8('%.LoadExtension: database not open', [self]);
+    if not Assigned(sqlite3.db_config) or
+       not Assigned(sqlite3.load_extension) or
+       not Assigned(sqlite3.free_) then
+      ESqlite3Exception.RaiseUtf8(
+        '%.LoadExtension: SQLite API unavailable', [self]);
+    // remember the current state of the C extension-loading API
+    bak := 0;
+    sqlite3_check(fDB, sqlite3.db_config(fDB,
+      SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, -1, @bak),
+      'LoadExtension: db_config query');
+    if bak = 0 then
+    begin
+      enabled := 0;
+      sqlite3_check(fDB, sqlite3.db_config(fDB,
+        SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, @enabled),
+        'LoadExtension: db_config enable');
+    end;
+    try
+      StringToUtf8(aPath, fn);
+      msg := nil;
+      res := sqlite3.load_extension(fDB,pointer(fn), pointer(aEntryPoint), msg);
+      try
+        if res <> SQLITE_OK then
+          sqlite3_failed(fDB, res, Make(['LoadExtension ', fn, ': ', msg]));
+      finally
+        if msg <> nil then
+          sqlite3.free_(msg); // always release
+      end;
+    finally
+      // restore previous extension-loading state - e.g. after ESqlite3Exception
+      if bak = 0 then
+        sqlite3_check(fDB, sqlite3.db_config(fDB,
+          SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 0, @bak),
+        'LoadExtension: db_config restore');
+    end;
+  finally
+    UnLock;
   end;
 end;
 
@@ -8174,8 +8272,9 @@ begin
 end;
 
 procedure TSqlRequest.Execute(aDB: TSqlite3DB; const aSql: RawUtf8;
-  out aValue: RawUtf8);
+  var aValue: RawUtf8);
 begin
+  FastAssignNew(aValue);
   try
     Prepare(aDB, aSql); // will raise an ESqlite3Exception on error
     if FieldCount > 0 then
