@@ -1,50 +1,50 @@
-# mORMot2-Erweiterung: CSV (RFC 4180) und XLSX über TDocVariant
+# mORMot 2 extension: CSV (RFC 4180) and XLSX over TDocVariant
 
-Fünf Units, die ausschließlich mORMot2-Funktionen nutzen (keine Fremdkomponenten):
+Five units which use mORMot 2 features only (no third-party components):
 
-| Unit | Ordner | Inhalt |
+| Unit | Folder | Content |
 |---|---|---|
-| `mormot.core.tabular.pas` | `src/core` | Abstrakte Basisklasse `TTabularDocument`: komplette TDocVariant-Konvertierung (Header, Typen, Leerzellen, Spaltenermittlung), Template-Methoden für Lesen/Schreiben |
-| `mormot.core.csv.pas` | `src/core` | `TCsvDocument`: RFC-4180-Parser/Writer |
-| `mormot.core.xlsx.pas` | `src/core` | `TXlsxDocument`: XLSX-Reader/Writer auf derselben Basis |
-| `mormot.db.tabular.pas` | `src/db` | Zeilen ↔ mORMot-SQL-Datenbank (`TSqlDBConnectionProperties`): Spaltentypen ermitteln, CREATE TABLE, Bulk-Insert, SELECT → Zeilen |
-| `mormot.db.rad.tabular.pas` | `src/db` | Zeilen ↔ `TDataSet`: virtuelles Read-only-DataSet, Kopieren in beliebige editierbare DataSets, DataSet → Zeilen |
+| `mormot.core.tabular.pas` | `src/core` | Abstract `TTabularDocument` base class: the complete TDocVariant conversion (header, types, empty cells, column detection), with template methods for reading/writing |
+| `mormot.core.csv.pas` | `src/core` | `TCsvDocument`: RFC 4180 parser/writer |
+| `mormot.core.xlsx.pas` | `src/core` | `TXlsxDocument`: XLSX reader/writer on the same base class |
+| `mormot.db.tabular.pas` | `src/db` | Rows <-> mORMot SQL database (`TSqlDBConnectionProperties`): column type inference, CREATE TABLE, bulk insert, SELECT -> rows |
+| `mormot.db.rad.tabular.pas` | `src/db` | Rows <-> `TDataSet`: virtual read-only dataset, copy into any editable dataset, dataset -> rows |
 
-Verwendete mORMot2-Bausteine: `TXmlParser` / `AddXmlEscape` (mormot.core.fmt) für XML, `TZipRead` / `TZipWrite` (mormot.core.zip), `TTextWriter`, `TDocVariantData`, `TDynArrayHashed` (Shared-Strings-Deduplizierung), `GetNumericVariantFromJson` (Typerkennung), `TSynAnsiConvert` (Codepages), `Iso8601`/`DateTimeToIso8601Text`.
+mORMot 2 building blocks in use: `TXmlParser` / `AddXmlEscape` (mormot.core.fmt) for XML, `TZipRead` / `TZipWrite` (mormot.core.zip), `TTextWriter`, `TDocVariantData`, `TDynArrayHashed` (shared strings de-duplication), `GetNumericVariantFromJson` (type detection), `TSynAnsiConvert` (code pages), `Iso8601` / `DateTimeToIso8601Text`.
 
-> **Voraussetzung:** Der XML-Parser `TXmlParser`/`XmlToVariant` in `mormot.core.fmt` ist neu in mORMot2. Getestet gegen den aktuellen Commit `b9bdb62` (10.10.2026). Ältere mORMot2-Stände ohne `TXmlParser` kompilieren das XLSX-Unit nicht – dann mORMot2 aktualisieren.
+> **Requirement:** the `TXmlParser` / `XmlToVariant` XML parser of `mormot.core.fmt` is recent in mORMot 2. Older mORMot 2 revisions without `TXmlParser` do not compile the XLSX unit - update mORMot 2 in that case.
 
 ## Installation
 
-Die `mormot.core.*` nach `mORMot2/src/core/`, die `mormot.db.*` nach `mORMot2/src/db/` kopieren (alternativ alle in einen eigenen Ordner direkt unter `mORMot2/src/`, z. B. `src/ext/`). Die Units binden wie alle mORMot-Units `{$I ..\mormot.defines.inc}` relativ ein. Die CSV-/XLSX-Units hängen nicht von den DB-Units ab; `mormot.db.rad.tabular` ist die einzige Unit mit Abhängigkeit zu `DB.pas`.
+Copy the `mormot.core.*` units to `mORMot2/src/core/` and the `mormot.db.*` units to `mORMot2/src/db/`. Like all mORMot units, they include `{$I ..\mormot.defines.inc}` with a relative path. The CSV/XLSX units do not depend on the DB units; `mormot.db.rad.tabular` is the only unit depending on `DB.pas`.
 
-## Datenmodell (Input/Output = TDocVariant)
+## Data model (input/output = TDocVariant)
 
-**Lesen** liefert immer ein TDocVariant-Array von Zeilen:
+**Reading** always returns a TDocVariant array of rows:
 
-- mit `tboHeader`: `[{"Name":"Müller","Betrag":1.5}, ...]` – Spaltennamen aus der ersten Zeile; leere Namen werden zu `Col3`, doppelte zu `name_2`
-- ohne `tboHeader`: `[["Name","Betrag"],["Müller",1.5], ...]`
+- with `tboHeader`: `[{"Name":"Mueller","Amount":1.5}, ...]` - column names come from the first row; empty names become `Col3`, duplicates become `name_2`
+- without `tboHeader`: `[["Name","Amount"],["Mueller",1.5], ...]`
 
-**Schreiben** akzeptiert:
+**Writing** accepts:
 
-- Array von Objekten → Spalten = Vereinigung aller Feldnamen in Reihenfolge des Auftretens (oder explizit über `Columns[]`, dann auch als Feldauswahl/Reihenfolge)
-- Array von Arrays → positionsweise
-- nur XLSX: Objekt von Arrays `{"Umsatz":[...], "Kosten":[...]}` → mehrere Tabellenblätter
+- an array of objects -> columns = union of all field names in order of appearance (or explicitly via `Columns[]`, which then also acts as field selection/ordering)
+- an array of arrays -> positional
+- XLSX only: an object of arrays `{"Revenue":[...], "Costs":[...]}` -> several worksheets
 
-## Optionen (gemeinsam, `TTabularOptions`)
+## Options (shared, `TTabularOptions`)
 
-| Option | Wirkung |
+| Option | Effect |
 |---|---|
-| `tboHeader` | erste Zeile = Spaltennamen (Default) |
-| `tboSkipEmptyRows` | leere Zeilen ignorieren (Default) |
-| `tboTrimValues` | Leerzeichen am Rand entfernen |
-| `tboGuessTypes` | CSV: unquotierte Werte → Integer/Float/Boolean nach JSON-Syntax. `"007"` und `007` bleiben Text, 20-stellige IDs ebenfalls (kein Präzisionsverlust) |
-| `tboEmptyAsNull` | leere Zellen → `null`; im CSV bleibt `""` ein leerer String, damit `null`/`''` den Roundtrip überleben |
-| `tboDateAsText` | XLSX-Datumswerte als ISO-8601-Text statt `varDate` |
+| `tboHeader` | first row = column names (default) |
+| `tboSkipEmptyRows` | ignore empty rows (default) |
+| `tboTrimValues` | trim leading/trailing spaces |
+| `tboGuessTypes` | CSV: unquoted values -> integer/float/boolean following the JSON syntax. `"007"` and `007` stay text, 20-digit IDs too (no precision loss) |
+| `tboEmptyAsNull` | empty cells -> `null`; in CSV, `""` stays an empty string so that `null`/`''` survive a round trip |
+| `tboDateAsText` | XLSX date values as ISO 8601 text instead of `varDate` |
 
-Dazu: `DocOptions` (Default `JSON_FAST_FLOAT`), `MaxRows`, `DecimalSeparator` (z. B. `','` für deutsche Excel-CSV), `Columns`.
+Plus: `DocOptions` (default `JSON_FAST_FLOAT`), `MaxRows`, `DecimalSeparator` (e.g. `','` for German Excel CSV), `Columns`.
 
-## CSV-Beispiel (Delphi 7 kompatibel)
+## CSV example (Delphi 7 compatible)
 
 ```pascal
 uses
@@ -59,13 +59,13 @@ var
 begin
   csv := TCsvDocument.Create([tboHeader, tboGuessTypes, tboSkipEmptyRows]);
   try
-    csv.Delimiter := #0;             // automatisch erkennen (, ; TAB |)
+    csv.Delimiter := #0;             // auto-detect (, ; TAB |)
     csv.DecimalSeparator := ',';     // "1,5" -> 1.5
-    csv.LoadFromFile('export.csv', doc);  // UTF-8/UTF-16-BOM oder ANSI (1252)
+    csv.LoadFromFile('export.csv', doc);  // UTF-8/UTF-16 BOM or ANSI (1252)
     rows := _Safe(doc);
     for i := 0 to rows^.Count - 1 do
       writeln(_Safe(rows^.Values[i])^.U['Name']);
-    // zurückschreiben für Excel DE
+    // write it back for German Excel
     csv.Delimiter := ';';
     csv.CsvOptions := [csoWriteBom, csoEscapeFormulas];
     csv.SaveToFile(doc, 'import.csv');
@@ -75,18 +75,18 @@ begin
 end;
 ```
 
-Einzeiler: `CsvToVariant`, `CsvToJson`, `VariantToCsv`, `JsonToCsv`.
+One-liners: `CsvToVariant`, `CsvToJson`, `VariantToCsv`, `JsonToCsv`.
 
-### CSV-spezifisch
+### CSV specifics
 
-- RFC 4180 vollständig: Quotes, `""`-Escaping, Zeilenumbrüche in Feldern, optionaler letzter Zeilenumbruch; schreibt standardmäßig CRLF
-- tolerant beim Lesen (LF/CR allein, Text nach schließendem Quote); `csoStrict` wirft `ECsvException` mit Zeilennummer bei jeder RFC-Verletzung inkl. abweichender Feldanzahl
-- Excel-Hinweiszeile `sep=;` wird erkannt (`csoWriteSepLine` schreibt sie)
-- `Quoting`: `cqMinimal` (RFC, Default), `cqAll`, `cqNonNumeric`
-- `CodePage` beim Schreiben, z. B. `CP_WINANSI` für Altsysteme
-- `csoEscapeFormulas`: Schutz vor CSV-/Formel-Injection (Werte mit `= + - @` bekommen ein `'` vorangestellt)
+- Full RFC 4180: quotes, `""` escaping, line breaks inside fields, optional final line break; writes CRLF by default
+- Tolerant when reading (lone LF/CR, text after a closing quote); `csoStrict` raises `ECsvException` with the line number on any RFC violation, including a differing field count
+- The Excel hint line `sep=;` is recognized (`csoWriteSepLine` writes it)
+- `Quoting`: `cqMinimal` (RFC, default), `cqAll`, `cqNonNumeric`
+- `CodePage` when writing, e.g. `CP_WINANSI` for legacy systems
+- `csoEscapeFormulas`: protection against CSV/formula injection (values starting with `= + - @` get a leading `'`)
 
-## XLSX-Beispiel
+## XLSX example
 
 ```pascal
 uses
@@ -99,40 +99,40 @@ var
 begin
   x := TXlsxDocument.Create([tboHeader, tboEmptyAsNull]);
   try
-    x.SheetName := 'Daten';                  // sonst SheetIndex (Default 0)
-    x.LoadFromFile('eingang.xlsx', doc);     // Zahlen, Bool, Datum typisiert
-    x.LoadSheetsFromFile('eingang.xlsx', all); // {"Blatt1":[...],"Blatt2":[...]}
+    x.SheetName := 'Data';                   // otherwise SheetIndex (default 0)
+    x.LoadFromFile('input.xlsx', doc);       // numbers, booleans, dates typed
+    x.LoadSheetsFromFile('input.xlsx', all); // {"Sheet1":[...],"Sheet2":[...]}
 
     x.XlsxOptions := [xoHeaderBold, xoFreezeHeader, xoAutoFilter, xoAutoWidth];
     x.SheetName := 'Export';
-    x.SaveToFile(doc, 'ausgang.xlsx');       // ein Blatt
-    x.SaveToFile(all, 'alle.xlsx');          // mehrere Blätter
+    x.SaveToFile(doc, 'output.xlsx');        // one sheet
+    x.SaveToFile(all, 'all.xlsx');           // several sheets
   finally
     x.Free;
   end;
 end;
 ```
 
-Einzeiler: `XlsxToVariant`, `XlsxSheetsToVariant`, `XlsxToJson`, `VariantToXlsx`, `JsonToXlsx`.
+One-liners: `XlsxToVariant`, `XlsxSheetsToVariant`, `XlsxToJson`, `VariantToXlsx`, `JsonToXlsx`.
 
-### XLSX lesen
+### Reading XLSX
 
-- Shared Strings, Inline Strings, Rich-Text-Runs (Phonetik `rPh` wird ignoriert), `_xHHHH_`-Escapes
-- Zahlen als Int64 bzw. Double, Booleans, Fehlerwerte als Text (`#DIV/0!`), `t="d"` ISO-Datum
-- Datumserkennung über eingebaute (14–22, 45–47 …) und eigene Zahlenformate; 1900-Schaltjahrfehler von Excel und 1904-Datumssystem berücksichtigt
-- Formeln: es wird der zwischengespeicherte Wert gelesen, Formeln werden nicht berechnet
-- Lücken in Zeilen/Spalten werden aufgefüllt; Namespace-Präfixe (`x:`) und abweichende Pfade aus den Relationships werden aufgelöst
-- `GetSheetNames`, `GetSheets` (inkl. Hidden-Flag)
-- Schutz: Entpackgröße pro Teil ist auf 256 MB begrenzt (mORMot `UnZip`), der XML-Parser verarbeitet keine DTD/Entities
+- Shared strings, inline strings, rich text runs (`rPh` phonetic runs are ignored), `_xHHHH_` escapes
+- Numbers as Int64 or Double, booleans, error values as text (`#DIV/0!`), `t="d"` ISO dates
+- Date detection via built-in (14-22, 45-47 ...) and custom number formats; the Excel 1900 leap year bug and the 1904 date system are handled
+- Formulas: the cached value is read, formulas are not evaluated
+- Gaps in rows/columns are filled; namespace prefixes (`x:`) and non-default paths from the relationships are resolved
+- `GetSheetNames`, `GetSheets` (including the hidden flag)
+- Protection: the unpacked size per part is limited to 256 MB (mORMot `UnZip`), and the XML parser handles no DTD/entities
 
-### XLSX schreiben
+### Writing XLSX
 
-- Typen: Integer/Float → Zahl, Boolean → `t="b"`, `varDate` → Seriennummer mit Datums- bzw. Datum/Zeit-Format, Text → deduplizierte Shared Strings, verschachtelte DocVariants → JSON-Text
-- Blattnamen werden bereinigt (`[]:*?/\`, max. 31 Zeichen, eindeutig)
+- Types: integer/float -> number, boolean -> `t="b"`, `varDate` -> serial number with a date or date/time format, text -> de-duplicated shared strings, nested DocVariants -> JSON text
+- Sheet names are sanitized (`[]:*?/\`, max 31 characters, unique)
 
-## Datenbank: `mormot.db.tabular`
+## Database: `mormot.db.tabular`
 
-Überführt die Zeilen in eine beliebige mORMot-SQL-Verbindung (`TSqlDBConnectionProperties`: SQLite3, PostgreSQL, Oracle, MSSQL/ODBC, MySQL, Firebird, ZEOS, FireDAC …) und zurück.
+Moves the rows into any mORMot SQL connection (`TSqlDBConnectionProperties`: SQLite3, PostgreSQL, Oracle, MSSQL/ODBC, MySQL, Firebird, ZEOS, FireDAC ...) and back.
 
 ```pascal
 uses
@@ -150,12 +150,12 @@ begin
   csv := TCsvDocument.CreateDelimiter(';', [tboHeader, tboGuessTypes]);
   try
     csv.DecimalSeparator := ',';
-    csv.LoadFromFile('artikel.csv', rows);
-    // Tabelle anlegen (falls nicht vorhanden) und alle Zeilen in einer Transaktion einfügen
-    n := TabularToSqlDB(props, 'artikel', rows, [tsoCreateTable, tsoDeleteFirst]);
-    // Rückweg: beliebige Abfrage -> XLSX (Datumsspalten werden echte Excel-Datumswerte)
+    csv.LoadFromFile('articles.csv', rows);
+    // create the table (if missing) and insert all rows in one transaction
+    n := TabularToSqlDB(props, 'articles', rows, [tsoCreateTable, tsoDeleteFirst]);
+    // way back: any query -> XLSX (date columns become real Excel dates)
     FileFromString(VariantToXlsx(SqlDBToTabular(props,
-      'select * from artikel where preis > ?', [10])), 'teuer.xlsx');
+      'select * from articles where price > ?', [10])), 'expensive.xlsx');
   finally
     csv.Free;
     props.Free;
@@ -163,79 +163,97 @@ begin
 end;
 ```
 
-| Funktion | Zweck |
+| Function | Purpose |
 |---|---|
-| `TabularToSqlDB(Props, Table, Rows, Options, BatchRows)` | Zeilen einfügen, liefert Anzahl. Optional Tabelle anlegen, vorher leeren; immer in einer Transaktion (Rollback bei Fehler) |
-| `SqlDBToTabular(Props, Sql, Params, MaxRows)` | SELECT → TDocVariant-Zeilen (bereit für CSV/XLSX) |
-| `TabularSqlCreate(Props, Table, Rows)` | nur das passende `CREATE TABLE` im SQL-Dialekt der Verbindung (via `Props.SqlCreate`) |
-| `TabularColumns(Rows)` | Spaltenlayout aus **allen** Zeilen: Typ, max. Länge, Null-Werte, gültiger SQL-Name |
+| `TabularToSqlDB(Props, Table, Rows, Options, BatchRows)` | insert rows, returns the count. Optionally creates the table and empties it first; always inside one transaction (rollback on error) |
+| `SqlDBToTabular(Props, Sql, Params, MaxRows)` | SELECT -> TDocVariant rows (ready for CSV/XLSX) |
+| `TabularSqlCreate(Props, Table, Rows)` | only the matching `CREATE TABLE`, in the SQL dialect of the connection (via `Props.SqlCreate`) |
+| `TabularColumns(Rows)` | column layout from **all** rows: type, max length, null values, valid SQL name |
 
-Optionen `TTabularSqlOptions`: `tsoCreateTable` (Default), `tsoDeleteFirst`, `tsoIgnoreUnknownColumns`, `tsoNoTransaction`, `tsoNoBatch`, `tsoTextAsClob`.
+`TTabularSqlOptions`: `tsoCreateTable` (default), `tsoDeleteFirst`, `tsoIgnoreUnknownColumns`, `tsoNoTransaction`, `tsoNoBatch`, `tsoTextAsClob`.
 
-Verhalten:
+Behavior:
 
-- **Typen:** Ganzzahlen und Booleans → `ftInt64`, bis 4 Nachkommastellen → `ftCurrency`, sonst `ftDouble`, `varDate` → `ftDate`, alles andere bzw. gemischte Spalten → `ftUtf8`. Textbreite wird auf 50/100/255/1000 aufgerundet, darüber CLOB/TEXT.
-- **Spaltennamen:** `Art.Nr` → `Art_Nr`, `1st` → `_1st`, SQL-Schlüsselwörter (`order`, `when`, `value` …) bekommen ein `_` angehängt. Bei bestehender Tabelle wird per Original- oder SQL-Namen zugeordnet (Groß-/Kleinschreibung egal) und in den Spaltentyp der Tabelle konvertiert (`"42"` → Integer-Spalte). Unbekannte Spalten lösen einen Fehler aus, außer mit `tsoIgnoreUnknownColumns`.
-- **Bulk-Insert** wie im mORMot-ORM (`BatchSend`): Multi-VALUES-INSERT über `Props.OnBatchInsert` (SQLite3, MySQL, MSSQL …), PostgreSQL `INSERT … VALUES (unnest(?::int8[]), …)` mit Array-Binding, Array-DML für Oracle/FireDAC/ZEOS/IBX; sonst bzw. mit `tsoNoBatch` ein vorbereitetes INSERT pro Zeile.
-- **Fehler:** Nicht konvertierbare Werte lösen `ETabularSql` mit Zeilennummer und Spaltenname aus; die gesamte Transaktion wird zurückgerollt.
+- **Types:** integers and booleans -> `ftInt64`, up to 4 decimals -> `ftCurrency`, otherwise `ftDouble`, `varDate` -> `ftDate`, anything else or mixed columns -> `ftUtf8`. The text width is rounded up to 50/100/255/1000, above that CLOB/TEXT is used.
+- **Column names:** `Art.Nr` -> `Art_Nr`, `1st` -> `_1st`, SQL keywords (`order`, `when`, `value` ...) get a trailing `_`. With an existing table, columns are matched by original or SQL name (case-insensitive) and converted to the column type of the table (`"42"` -> integer column). Unknown columns raise an error unless `tsoIgnoreUnknownColumns` is set.
+- **Bulk insert** like the mORMot ORM (`BatchSend`): multi-VALUES INSERT via `Props.OnBatchInsert` (SQLite3, MySQL, MSSQL ...), PostgreSQL `INSERT ... VALUES (unnest(?::int8[]), ...)` with array binding, array DML for Oracle/FireDAC/ZEOS/IBX; otherwise, or with `tsoNoBatch`, one prepared INSERT per row.
+- **Errors:** values which cannot be converted raise `ETabularSql` with the row number and column name; the whole transaction is rolled back.
 
 ## TDataSet: `mormot.db.rad.tabular`
 
 ```pascal
-// 1. ohne Kopie, read-only (z. B. für ein DBGrid)
+// 1. without copy, read-only (e.g. for a DBGrid)
 DataSource1.DataSet := TTabularDataSet.Create(self, rows);
 
-// 2. in ein editierbares DataSet (TClientDataSet, TFDMemTable, TBufDataset, kbmMemTable,
-//    oder eine Query/Table auf einer echten DB-Tabelle)
-TabularFieldDefs(rows, ClientDataSet1.FieldDefs);  // nur bei leerem Memory-DataSet nötig
+// 2. into an editable dataset (TClientDataSet, TFDMemTable, TBufDataset, kbmMemTable,
+//    or a query/table on a real database table)
+TabularFieldDefs(rows, ClientDataSet1.FieldDefs);  // only needed for an empty memory dataset
 ClientDataSet1.CreateDataSet;
 TabularAppendToDataSet(rows, ClientDataSet1, [tdoEmptyFirst]);
 
-// 3. beliebiges DataSet -> CSV/XLSX
+// 3. any dataset -> CSV/XLSX
 FileFromString(VariantToXlsx(DataSetToTabular(Query1)), 'export.xlsx');
 ```
 
-| Funktion/Klasse | Zweck |
+| Function/class | Purpose |
 |---|---|
-| `TTabularDataSet` | Read-only `TDataSet` direkt über den Zeilen (Basis `TDocVariantArrayDataSet`), aber Feldtypen und Stringlängen aus **allen** Zeilen; reine Boolean-Spalten als `TBooleanField`, Array-Zeilen als `Col1`, `Col2` …, Texte > 4000 Zeichen als Memo |
-| `TabularFieldDefs(Rows, Defs, StringAsAnsi)` | `FieldDefs` passend zu den Zeilen füllen (vor `CreateDataSet`) |
-| `TabularAppendToDataSet(Rows, Dest, Options)` | Append/Post je Zeile, Felder per Name zugeordnet, Werte in den jeweiligen `TField.DataType` konvertiert; bei Fehler `Cancel` + `ETabularDataSet` mit Zeile und Feld |
-| `DataSetToTabular(Source, MaxRows)` | alle Datensätze → Zeilen (Int64, Double, Currency für BCD, Boolean, `varDate`, UTF-8-Text, BLOB als Base64); Position wird wiederhergestellt |
-| `TabularValueToField` / `FieldToTabularValue` | Einzelwert-Konvertierung |
+| `TTabularDataSet` | read-only `TDataSet` directly on top of the rows (based on `TDocVariantArrayDataSet`), but with field types and string lengths taken from **all** rows; pure boolean columns as `TBooleanField`, array rows as `Col1`, `Col2` ..., texts > 4000 characters as memo |
+| `TabularFieldDefs(Rows, Defs, StringAsAnsi)` | fill `FieldDefs` matching the rows (before `CreateDataSet`) |
+| `TabularAppendToDataSet(Rows, Dest, Options)` | Append/Post per row, fields matched by name, values converted to the respective `TField.DataType`; on error `Cancel` + `ETabularDataSet` with row and field |
+| `DataSetToTabular(Source, MaxRows)` | all records -> rows (Int64, Double, Currency for BCD, Boolean, `varDate`, UTF-8 text, BLOB as Base64); the position is restored |
+| `TabularValueToField` / `FieldToTabularValue` | single value conversion |
 
-Optionen `TTabularDataSetOptions`: `tdoIgnoreUnknownFields`, `tdoEmptyFirst`, `tdoKeepControls`.
+`TTabularDataSetOptions`: `tdoIgnoreUnknownFields`, `tdoEmptyFirst`, `tdoKeepControls`.
 
-`StringAsAnsi = true` legt Textspalten als `ftString`/`ftMemo` statt `ftWideString`/`ftWideMemo` an – für ältere Delphi-7-Komponenten, die mit `TWideStringField` nicht gut umgehen.
+`StringAsAnsi = true` creates text columns as `ftString`/`ftMemo` instead of `ftWideString`/`ftWideMemo` - for older Delphi 7 components which do not cope well with `TWideStringField`.
 
 ## Tests
 
-`test/tabulartests.dpr` – 62 Prüfungen, kompiliert und getestet mit FPC 3.2.2 (Linux x64) gegen mORMot2 `b9bdb62`:
+Two console programs are located in this folder, using the test files in `fixtures/` (regenerated by `make_fixtures.py`, which requires `openpyxl`). The CSV fixtures are byte-exact (CRLF, ANSI): `fixtures/.gitattributes` disables any line ending conversion.
 
-- RFC-4180-Beispiele, Kantenfälle, Strict-Modus, Encodings (UTF-8-BOM, UTF-16, CP1252), Python-`csv`-Ausgabe
-- XLSX von openpyxl (Typen, Datum, Lücken, mehrere/versteckte Blätter, 1904), handgebaute Datei (Präfixe, inlineStr, Rich Text, Escapes) und eine von LibreOffice neu gespeicherte Datei
-- erzeugte XLSX werden von openpyxl und LibreOffice Calc korrekt geöffnet
-- keine Speicherlecks (heaptrc)
+`tabulartests.dpr` - 62 checks for `mormot.core.tabular/csv/xlsx`:
 
-`test/dbtests.dpr` – 44 Prüfungen: Spaltenermittlung, SQLite3 (in-memory) und PostgreSQL 16 (Batch- und Einzelzeilen-Pfad, bestehende Tabelle, Typkonvertierung, Rollback bei Fehler, reservierte Namen, CSV → SQL → XLSX), `TTabularDataSet` und FPC-`TBufDataset` (unter Delphi `TClientDataSet`) inkl. Roundtrip; ebenfalls ohne Speicherlecks.
+- RFC 4180 samples, edge cases, strict mode, encodings (UTF-8 BOM, UTF-16, CP1252), Python `csv` output
+- XLSX from openpyxl (types, dates, gaps, several/hidden sheets, 1904), a hand-made file (prefixes, inlineStr, rich text, escapes) and a file re-saved by LibreOffice
+- generated XLSX files open correctly with openpyxl and LibreOffice Calc
 
-Performance (100 000 Zeilen, 4–5 Spalten):
+`dbtests.dpr` - 37 checks without PostgreSQL (44 with a PostgreSQL 16 server): column inference, SQLite3 (in-memory, batch and per-row paths, existing table, type conversion, rollback on error, reserved names, CSV -> SQL -> XLSX), `TTabularDataSet` and an editable in-memory dataset (FPC `TBufDataset`, Delphi `TClientDataSet`) including round trip. Pass `server:port db user pass` to also run the PostgreSQL tests.
 
-| | Schreiben | Lesen |
+Verified results (exit code 0, no failed check):
+
+| Compiler | Target | `tabulartests` | `dbtests` |
+|---|---|---|---|
+| Delphi 7 | Win32 | 62/62 | 37/37 |
+| Delphi 13 | Win32 | 62/62 | 37/37 |
+| Delphi 13 | Win64 | 62/62 | 37/37 |
+| FPC 3.2.3 | Win64 | 62/62 | 37/37 |
+
+Build with Delphi, e.g. for Win64 (the mORMot 2 source folders must be in the unit search path, and the `static` folder with the mORMot static binaries is required for the 32-bit targets):
+
+```
+dcc64 tabulartests.dpr -B -Q -R<mORMot2>\src -I<mORMot2>\src;<mORMot2>\src\core -U<mORMot2>\src\core;<mORMot2>\src\lib;<mORMot2>\src\db;... -E<out> -N<out>
+```
+
+With FPC, use `fpc -Mdelphi -B -O2` with the same unit paths (`-Fu`) and `-Fi<mORMot2>\src`. Then run `tabulartests <path-to>\fixtures` (default: `..\fixtures\` relative to the executable) and `dbtests`.
+
+Typical timings (100,000 rows, 4-5 columns, in-memory):
+
+| | Write | Read |
 |---|---|---|
-| CSV (5,9 MB) | ~60 ms | ~80 ms |
-| XLSX (2,6 MB) | ~420 ms | ~150 ms |
-| SQLite3 in-memory | ~150 ms (Batch) / ~200 ms (pro Zeile) | ~100 ms |
-| PostgreSQL 16 lokal | ~270 ms (`unnest`-Array-Binding) / ~8 200 ms (pro Zeile) | |
+| CSV (5.9 MB) | 31-62 ms | 63-79 ms |
+| XLSX (2.6 MB) | 390-720 ms | 156-220 ms |
+| SQLite3 in-memory | 63-141 ms (batch) / 109-188 ms (per row) | 32-79 ms |
 
-Ausführen: `test/make_fixtures.py` erzeugt die Testdateien (benötigt `openpyxl`), `test/build.sh tabulartests.dpr` baut mit FPC. Die DB-Tests: `test/build.sh -dNOSQLITE3STATIC -dNOASMBLOCK dbtests.dpr`, dann `out/dbtests [server:port db user pass]` – ohne Parameter wird PostgreSQL übersprungen. (`NOASMBLOCK`/`NOSQLITE3STATIC` nur, weil in der Testumgebung die mORMot-`static`-Dateien fehlten.)
+(range over Delphi 13 Win64 and FPC 3.2.3 Win64 on the same machine). A PostgreSQL 16 server on localhost needed ~270 ms with the `unnest` array binding and ~8,200 ms with one INSERT per row.
 
-## Hinweise und Grenzen
+## Notes and limits
 
-- **Delphi 7:** Der Code ist im Delphi-7-Stil geschrieben (keine Generics, kein `Exit(x)`, keine Inline-Variablen, `object`-kompatible mORMot-Records). Hier wurde nur mit FPC kompiliert, ein Delphi-7-/13.1-Lauf steht noch aus.
-- Fließkommazahlen werden mit mORMot-`DoubleToStr` (15 signifikante Stellen) geschrieben, also wie in mORMot-JSON, nicht mit den vollen 17 Stellen.
-- LibreOffice zeigt Datumswerte vor dem 01.03.1900 einen Tag versetzt an (es bildet den Excel-Schaltjahrfehler nicht nach); Excel zeigt sie korrekt.
-- Nicht enthalten: Zellformatierung über Fett-Kopfzeile/Datumsformat hinaus, verbundene Zellen (nur die linke obere Zelle trägt den Wert), Streaming für Dateien > RAM.
-- Eine Instanz ist nicht threadsicher, kann aber für mehrere Load/Save-Aufrufe wiederverwendet werden.
-- `TDocVariantArrayDataSet.GetRowFieldData` (mORMot, `mormot.db.rad.ui.pas` Zeile 947) liest `dv^.Names[f]` ohne Prüfung `f < dv^.Count` – bei Zeilen mit fehlenden Feldern ein Zugriff außerhalb des Arrays. `TTabularDataSet` normalisiert die Zeilen deshalb vorher (alle Spalten in gleicher Reihenfolge); bei direkter Nutzung von `DocVariantToDataSet` mit ungleichmäßigen Zeilen bleibt das Risiko bestehen. Fix: Branch `fix/docvariantarraydataset` in `tobfel/mORMot2` (Commits `7e71b67` und `d72e12d`, letzterer behebt zusätzlich die unvollständige Int64/Float-Spaltenprüfung im Konstruktor).
-- PostgreSQL legt die (nicht gequoteten) Spaltennamen kleingeschrieben an: `Art.Nr` wird zu `art_nr`, und so liefert `SqlDBToTabular` sie auch zurück.
-- Zeilen, die als Datum in eine `ftDate`-Spalte sollen, müssen `varDate` oder ISO-8601-Text sein; `31.01.2024` wird abgelehnt.
+- **Delphi 7:** the code is written in Delphi 7 style (no generics, no `Exit(x)`, no inline variables, `object`-compatible mORMot records). It compiles and passes all tests with Delphi 7, Delphi 13 and FPC.
+- **Unicode Delphi and byte literals:** the UTF-8 BOM is written as raw bytes (`FastSetRawByteString`), because a `#$ef#$bb#$bf` string literal would be UTF-8 encoded on Unicode Delphi. The test sources are pure ASCII (`\uXXXX` JSON escapes, `HexToBin()` for byte-exact comparisons) for the same reason.
+- Floating point numbers are written with mORMot `DoubleToStr` (15 significant digits), i.e. like mORMot JSON, not with the full 17 digits.
+- LibreOffice displays dates before 1900-03-01 one day off (it does not reproduce the Excel leap year bug); Excel displays them correctly.
+- Not included: cell formatting beyond the bold header row and date formats, merged cells (only the top-left cell holds the value), streaming for files larger than RAM.
+- An instance is not thread-safe, but can be reused for several Load/Save calls.
+- `TDocVariantArrayDataSet.GetRowFieldData` (mORMot, `mormot.db.rad.ui.pas`) reads `dv^.Names[f]` without checking `f < dv^.Count` - an out-of-bounds access for rows with missing fields. `TTabularDataSet` therefore normalizes the rows first (all columns in the same order); when using `DocVariantToDataSet` directly with uneven rows, the risk remains. Fixed in the separate branches `fix/docvariantarraydataset-field-bounds` (out-of-bounds `Names[]` read, commit `7e71b67`) and `fix/docvariantarraydataset` (additionally fixes the incomplete Int64/Float column check of the constructor, commit `d72e12d`) of `tobfel/mORMot2`.
+- PostgreSQL creates the (unquoted) column names in lower case: `Art.Nr` becomes `art_nr`, and `SqlDBToTabular` returns them that way.
+- Rows which should end up as a date in an `ftDate` column must be `varDate` or ISO 8601 text; `31.01.2024` is rejected.
