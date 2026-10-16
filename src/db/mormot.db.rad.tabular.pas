@@ -343,44 +343,41 @@ end;
 function TabularValueToField(const Value: variant; Field: TField): boolean;
 var
   vd: PVarData;
+  conv: TTabularConversion;
   text: RawUtf8;
   istext: boolean;
   i64: Int64;
   d: double;
   dt: TDateTime;
-  err: integer;
   bcd: TBcd;
   blob: TRawByteStringStream;
 begin
   result := true;
-  vd := @Value;
-  while vd^.VType = varVariantByRef do
-    vd := vd^.VPointer;
+  vd := VarDataFromVariant(Value);
   if (vd^.VType = varEmpty) or
      (vd^.VType = varNull) then
   begin
     Field.Clear;
     exit;
   end;
+  conv := tcValue;
   case Field.DataType of
     ftBoolean:
-      if vd^.VType = varBoolean then
-        Field.AsBoolean := vd^.VBoolean
-      else if VariantToInt64(PVariant(vd)^, i64) then
-        Field.AsBoolean := i64 <> 0
-      else
       begin
-        TabularValueToText(PVariant(vd)^, text, istext);
-        if IdemPropNameU(text, 'true') or
-           (text = '1') then
-          Field.AsBoolean := true
-        else if IdemPropNameU(text, 'false') or
-                (text = '0') then
-          Field.AsBoolean := false
-        else if text = '' then
-          Field.Clear
-        else
-          result := false;
+        conv := TabularToInt64(PVariant(vd)^, i64); // boolean, 0/1 or number
+        if conv = tcValue then
+          Field.AsBoolean := i64 <> 0
+        else if conv = tcInvalid then
+          if IdemPropNameU(PVariant(vd)^, 'true') then
+          begin
+            Field.AsBoolean := true;
+            conv := tcValue;
+          end
+          else if IdemPropNameU(PVariant(vd)^, 'false') then
+          begin
+            Field.AsBoolean := false;
+            conv := tcValue;
+          end;
       end;
     ftSmallint,
     ftInteger,
@@ -388,49 +385,23 @@ begin
     ftAutoInc,
     ftLargeint:
       begin
-        if not VariantToInt64(PVariant(vd)^, i64) then
-        begin
-          TabularValueToText(PVariant(vd)^, text, istext);
-          if text = '' then
-          begin
-            Field.Clear;
-            exit;
-          end;
-          i64 := GetInt64(pointer(text), err);
-          if err <> 0 then
-          begin
-            result := false;
-            exit;
-          end;
-        end;
-        if Field.DataType = ftLargeint then
-          TLargeintField(Field).AsLargeInt := i64
-        else
-          Field.AsInteger := i64;
+        conv := TabularToInt64(PVariant(vd)^, i64);
+        if conv = tcValue then
+          if Field.DataType = ftLargeint then
+            TLargeintField(Field).AsLargeInt := i64
+          else
+            Field.AsInteger := i64;
       end;
     ftFloat,
     ftCurrency,
     ftBCD:
       begin
-        if not VariantToDouble(PVariant(vd)^, d) then
-        begin
-          TabularValueToText(PVariant(vd)^, text, istext);
-          if text = '' then
-          begin
-            Field.Clear;
-            exit;
-          end;
-          d := GetExtended(pointer(text), err);
-          if err <> 0 then
-          begin
-            result := false;
-            exit;
-          end;
-        end;
-        if Field.DataType = ftBCD then
-          Field.AsCurrency := d
-        else
-          Field.AsFloat := d;
+        conv := TabularToDouble(PVariant(vd)^, d);
+        if conv = tcValue then
+          if Field.DataType = ftBCD then
+            Field.AsCurrency := d
+          else
+            Field.AsFloat := d;
       end;
     ftFMTBcd:
       begin
@@ -444,20 +415,10 @@ begin
     ftTime,
     ftDateTime,
     ftTimeStamp:
-      if TabularIsDate(PVariant(vd)^, dt) then
-        Field.AsDateTime := dt
-      else if VariantToDouble(PVariant(vd)^, d) then
-        Field.AsDateTime := d
-      else
       begin
-        TabularValueToText(PVariant(vd)^, text, istext);
-        dt := Iso8601ToDateTime(text);
-        if dt <> 0 then
-          Field.AsDateTime := dt
-        else if text = '' then
-          Field.Clear
-        else
-          result := false;
+        conv := TabularToDateTime(PVariant(vd)^, dt);
+        if conv = tcValue then
+          Field.AsDateTime := dt;
       end;
     ftBlob,
     ftGraphic,
@@ -502,6 +463,10 @@ begin
       Field.AsString := Utf8ToString(text);
     end;
   end;
+  if conv = tcNull then
+    Field.Clear
+  else if conv = tcInvalid then
+    result := false;
 end;
 
 function TabularAppendToDataSet(const Rows: variant; Dest: TDataSet;

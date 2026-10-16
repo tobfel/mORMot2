@@ -134,7 +134,6 @@ type
     fWriteRowIndex: integer;
     function NewCell: PVariant;
       {$ifdef HASINLINE} inline; {$endif}
-    function GuessValue(const Text: RawUtf8; var Value: variant): boolean;
     procedure SetHeaderFromCells;
     procedure ReadClear;
     // reading methods, to be called by the overriden Parse() method
@@ -143,6 +142,10 @@ type
     procedure ReadCellValue(const Value: variant);
     /// append a date/time value, following tboDateAsText option
     procedure ReadCellDateTime(Value: TDateTime);
+    /// append a number value parsed by TabularTextToNumber()
+    // - returns false, and append nothing, if P^ is not a valid number
+    function ReadCellNumber(P: PUtf8Char; Len: PtrInt;
+      DecimalSeparator: AnsiChar): boolean;
     /// append a text value - type guess is done if GuessType and tboGuessTypes
     procedure ReadCellText(const Text: RawUtf8; GuessType: boolean);
     /// append an empty cell to the current row
@@ -262,6 +265,36 @@ procedure TabularValueToText(const Value: variant; var Text: RawUtf8;
 /// returns true if a variant contains a date/time value
 function TabularIsDate(const Value: variant; out DateTime: TDateTime): boolean;
 
+/// parse a number text buffer into an Int64, currency or double variant
+// - only the JSON number syntax is accepted, so e.g. '007', '1.2.3', '1e' or
+// ' 1' are refused, as are integers too big for Int64 (they would loose
+// precision as double, e.g. a 20 digits ID)
+// - DecimalSeparator<>'.' is accepted instead of '.', unless both appear
+// (e.g. '1.234,5' with a thousands separator is refused)
+// - this is the single number parser used by all tabular formats and bridges
+function TabularTextToNumber(P: PUtf8Char; Len: PtrInt; var Value: variant;
+  AllowDouble: boolean = true; DecimalSeparator: AnsiChar = '.'): boolean;
+
+type
+  /// result of TabularToInt64/TabularToDouble/TabularToDateTime conversion
+  // - tcNull: null/empty value or void text
+  // - tcValue: the value was converted
+  // - tcInvalid: the value could not be converted, e.g. 'abc' into a number
+  TTabularConversion = (
+    tcNull,
+    tcValue,
+    tcInvalid);
+
+/// convert a cell value (number, boolean or number text) into an Int64
+// - floats are accepted only if they have no fractional part
+function TabularToInt64(const Value: variant; out Dest: Int64): TTabularConversion;
+
+/// convert a cell value (number, boolean or number text) into a double
+function TabularToDouble(const Value: variant; out Dest: double): TTabularConversion;
+
+/// convert a cell value (varDate, number or ISO-8601 text) into a TDateTime
+function TabularToDateTime(const Value: variant; out Dest: TDateTime): TTabularConversion;
+
 
 implementation
 
@@ -349,6 +382,142 @@ begin
   result := vd^.VType = varDate;
   if result then
     DateTime := vd^.VDate;
+end;
+
+function TabularTextToNumber(P: PUtf8Char; Len: PtrInt; var Value: variant;
+  AllowDouble: boolean; DecimalSeparator: AnsiChar): boolean;
+var
+  tmp: array[0..63] of AnsiChar; // numbers are short: no heap allocation
+  i: PtrInt;
+  c: AnsiChar;
+  dot, sep, float: boolean;
+  e: PUtf8Char;
+begin
+  result := false;
+  if (P = nil) or
+     (Len <= 0) or
+     (Len > high(tmp)) or
+     not (P^ in ['-', '0'..'9']) then
+    exit;
+  dot := false;
+  sep := false;
+  float := false;
+  for i := 0 to Len - 1 do
+  begin
+    c := P[i];
+    if c = '.' then
+    begin
+      dot := true;
+      float := true;
+    end
+    else if c = DecimalSeparator then // only if DecimalSeparator <> '.'
+    begin
+      sep := true;
+      float := true;
+      c := '.';
+    end
+    else if c in ['e', 'E'] then
+      float := true;
+    tmp[i] := c;
+  end;
+  if dot and
+     sep then
+    exit; // e.g. '1.234,5' with a thousands separator
+  tmp[Len] := #0;
+  VarClear(Value);
+  e := GetNumericVariantFromJson(@tmp, TVarData(Value), AllowDouble);
+  if (e <> @tmp[Len]) or
+     ((TVarData(Value).VType = varDouble) and
+      not float) then // huge integer would loose precision as double
+    VarClear(Value)
+  else
+    result := true;
+end;
+
+// resolve a cell value as a number variant, parsing its text if needed
+function ToNumber(const Value: variant; var Temp: variant;
+  out Number: PVarData): TTabularConversion;
+var
+  tmp: TTempUtf8;
+begin
+  Number := VarDataFromVariant(Value);
+  case Number^.VType of
+    varEmpty,
+    varNull:
+      result := tcNull;
+    varString,
+    {$ifdef HASVARUSTRING}
+    varUString,
+    {$endif HASVARUSTRING}
+    varOleStr:
+      begin
+        VariantToTempUtf8(PVariant(Number)^, tmp);
+        if tmp.Len = 0 then
+          result := tcNull
+        else if TabularTextToNumber(tmp.Text, tmp.Len, Temp) then
+        begin
+          Number := @Temp;
+          result := tcValue;
+        end
+        else
+          result := tcInvalid;
+        TempUtf8Done(tmp);
+      end;
+  else
+    result := tcValue;
+  end;
+end;
+
+function TabularToInt64(const Value: variant; out Dest: Int64): TTabularConversion;
+var
+  temp: variant;
+  n: PVarData;
+  d: double;
+begin
+  result := ToNumber(Value, temp, n);
+  if (result = tcValue) and
+     not VariantToInt64(PVariant(n)^, Dest) then
+    if VariantToDouble(PVariant(n)^, d) and
+       (Frac(d) = 0) and
+       (Abs(d) < 9.2E18) then
+      Dest := Trunc(d)
+    else
+      result := tcInvalid;
+end;
+
+function TabularToDouble(const Value: variant; out Dest: double): TTabularConversion;
+var
+  temp: variant;
+  n: PVarData;
+begin
+  result := ToNumber(Value, temp, n);
+  if (result = tcValue) and
+     not VariantToDouble(PVariant(n)^, Dest) then
+    result := tcInvalid;
+end;
+
+function TabularToDateTime(const Value: variant; out Dest: TDateTime): TTabularConversion;
+var
+  vd: PVarData;
+  d: double;
+begin
+  result := tcValue;
+  vd := VarDataFromVariant(Value);
+  case vd^.VType of
+    varEmpty,
+    varNull:
+      result := tcNull;
+    varString:
+      if vd^.VAny = nil then
+        result := tcNull
+      else if not VariantToDateTime(PVariant(vd)^, Dest) then
+        result := tcInvalid; // only ISO-8601 text is accepted
+  else
+    if VariantToDouble(PVariant(vd)^, d) then
+      Dest := d // varDate or number
+    else if not VariantToDateTime(PVariant(vd)^, Dest) then
+      result := tcInvalid;
+  end;
 end;
 
 procedure TabularValueToText(const Value: variant; var Text: RawUtf8;
@@ -503,65 +672,18 @@ begin
   inc(fCellCount);
 end;
 
-function TTabularDocument.GuessValue(const Text: RawUtf8;
-  var Value: variant): boolean;
+function TTabularDocument.ReadCellNumber(P: PUtf8Char; Len: PtrInt;
+  DecimalSeparator: AnsiChar): boolean;
 var
-  p, e: PUtf8Char;
-  i: PtrInt;
-  tmp: RawUtf8;
+  v: PVariant;
 begin
-  result := false;
-  p := pointer(Text);
-  case p^ of
-    '-', '0'..'9':
-      begin
-        if fDecimalSeparator <> '.' then
-        begin
-          i := PosExChar(fDecimalSeparator, Text);
-          if i > 0 then
-          begin
-            if PosExChar('.', Text) > 0 then
-              exit; // e.g. '1.234,5' thousands separator: keep as text
-            tmp := Text;
-            UniqueRawUtf8(tmp);
-            tmp[i] := '.';
-            p := pointer(tmp);
-          end;
-        end;
-        VarClear(Value);
-        e := GetNumericVariantFromJson(p, TVarData(Value),
-          dvoAllowDoubleValue in fDocOptions);
-        if (e = nil) or
-           (e^ <> #0) then
-        begin
-          VarClear(Value);
-          exit;
-        end;
-        if (TVarData(Value).VType = varDouble) and
-           (PosExChar('.', Text) = 0) and
-           (PosExChar(fDecimalSeparator, Text) = 0) and
-           (PosExChar('e', Text) = 0) and
-           (PosExChar('E', Text) = 0) then
-        begin
-          // huge integer (e.g. a 20 digits ID) would loose precision as double
-          VarClear(Value);
-          exit;
-        end;
-        result := true;
-      end;
-    't', 'T':
-      if IdemPropNameU(Text, 'true') then
-      begin
-        Value := true;
-        result := true;
-      end;
-    'f', 'F':
-      if IdemPropNameU(Text, 'false') then
-      begin
-        Value := false;
-        result := true;
-      end;
-  end;
+  v := NewCell;
+  result := TabularTextToNumber(P, Len, v^, dvoAllowDoubleValue in fDocOptions,
+    DecimalSeparator);
+  if result then
+    inc(fCellNotEmpty)
+  else
+    dec(fCellCount); // v^ is still varEmpty
 end;
 
 procedure TTabularDocument.ReadClear;
@@ -633,12 +755,18 @@ begin
     ReadCellEmpty;
     exit;
   end;
+  if GuessType and
+     (tboGuessTypes in fOptions) then
+    if ReadCellNumber(pointer(Text), L, fDecimalSeparator) then
+      exit
+    else if IdemPropNameU(Text, 'true') or
+            IdemPropNameU(Text, 'false') then
+    begin
+      ReadCellValue(Text[1] in ['t', 'T']);
+      exit;
+    end;
   v := NewCell;
   inc(fCellNotEmpty);
-  if GuessType and
-     (tboGuessTypes in fOptions) and
-     GuessValue(Text, v^) then
-    exit;
   RawUtf8ToVariant(Text, v^);
 end;
 

@@ -861,10 +861,7 @@ var
   insheetdata, incell, invalue, inis, int, inrph, rowpending: boolean;
   rownum, nextrow, col, lastcol, style, idx: integer;
   dbl: double;
-  i64: Int64;
   err: integer;
-  P: PUtf8Char;
-  isint: boolean;
 
   procedure FlushRowGap;
   begin
@@ -1023,46 +1020,19 @@ begin
                         xctIsoDate:
                           ReadCellDateTime(Iso8601ToDateTime(text));
                       else
+                        // xctNumber: date/time from its style, or a number
+                        if (style >= 0) and
+                           (style < length(fDateStyle)) and
+                           fDateStyle[style] then
                         begin
-                          // xctNumber: Int64, double or date/time
-                          P := pointer(text);
-                          isint := true;
-                          while P^ <> #0 do
-                            if P^ in ['0'..'9', '-'] then
-                              inc(P)
-                            else
-                            begin
-                              isint := false;
-                              break;
-                            end;
-                          if (style >= 0) and
-                             (style < length(fDateStyle)) and
-                             fDateStyle[style] then
-                          begin
-                            dbl := GetExtended(pointer(text), err);
-                            if err = 0 then
-                              ReadCellDateTime(XlsxSerialToDateTime(dbl, fDate1904))
-                            else
-                              ReadCellText(text, false);
-                          end
-                          else if isint and
-                                  (length(text) <= 18) then
-                          begin
-                            i64 := GetInt64(pointer(text), err);
-                            if err = 0 then
-                              ReadCellValue(i64)
-                            else
-                              ReadCellText(text, false);
-                          end
+                          dbl := GetExtended(pointer(text), err);
+                          if err = 0 then
+                            ReadCellDateTime(XlsxSerialToDateTime(dbl, fDate1904))
                           else
-                          begin
-                            dbl := GetExtended(pointer(text), err);
-                            if err = 0 then
-                              ReadCellValue(dbl)
-                            else
-                              ReadCellText(text, false);
-                          end;
-                        end;
+                            ReadCellText(text, false);
+                        end
+                        else if not ReadCellNumber(pointer(text), length(text), '.') then
+                          ReadCellText(text, false);
                       end;
                   end;
               end;

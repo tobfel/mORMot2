@@ -373,80 +373,47 @@ end;
 function TabularValueToSql(const Value: variant; FieldType: TSqlDBFieldType;
   var Sql: RawUtf8): boolean;
 var
-  vd: PVarData;
+  conv: TTabularConversion;
   i64: Int64;
   d: double;
   dt: TDateTime;
-  err: integer;
   istext: boolean;
-  text: RawUtf8;
 begin
-  result := true;
-  vd := @Value;
-  while vd^.VType = varVariantByRef do
-    vd := vd^.VPointer;
-  if (vd^.VType = varEmpty) or
-     (vd^.VType = varNull) then
-  begin
-    Sql := 'null';
-    exit;
-  end;
   case FieldType of
     ftInt64:
-      if VariantToInt64(PVariant(vd)^, i64) then
-        Int64ToUtf8(i64, Sql)
-      else
       begin
-        TabularValueToText(PVariant(vd)^, text, istext);
-        if text = '' then
-          Sql := 'null'
-        else
-        begin
-          i64 := GetInt64(pointer(text), err);
-          result := err = 0;
+        conv := TabularToInt64(Value, i64);
+        if conv = tcValue then
           Int64ToUtf8(i64, Sql);
-        end;
       end;
     ftDouble,
     ftCurrency:
-      if VariantToDouble(PVariant(vd)^, d) then
-        DoubleToStr(d, Sql)
-      else
       begin
-        TabularValueToText(PVariant(vd)^, text, istext);
-        if text = '' then
-          Sql := 'null'
-        else
-        begin
-          d := GetExtended(pointer(text), err);
-          result := err = 0;
+        conv := TabularToDouble(Value, d);
+        if conv = tcValue then
           DoubleToStr(d, Sql);
-        end;
       end;
     ftDate:
-      if TabularIsDate(PVariant(vd)^, dt) then
-        Sql := QuotedStr(DateTimeToIso8601Text(dt), '''')
-      else
       begin
-        TabularValueToText(PVariant(vd)^, text, istext);
-        if text = '' then
-          Sql := 'null'
-        else
-        begin
-          // expect ISO-8601 text - refuse anything else (e.g. '31.01.2024')
-          result := Iso8601ToDateTime(text) <> 0;
-          Sql := QuotedStr(text, '''');
-        end;
+        conv := TabularToDateTime(Value, dt);
+        if conv = tcValue then
+          Sql := QuotedStr(DateTimeToIso8601Text(dt), '''');
       end;
-    ftBlob:
-      TabularValueToText(PVariant(vd)^, Sql, istext); // raw binary
   else
+    if VarIsEmptyOrNull(Value) then
+      conv := tcNull
+    else
     begin
-      // ftUtf8 (or unknown/null): nested TDocVariant as JSON
-      TabularValueToText(PVariant(vd)^, text, istext);
-      Sql := QuotedStr(text, '''');
+      // ftBlob as raw binary, ftUtf8 with nested TDocVariant as JSON
+      conv := tcValue;
+      TabularValueToText(Value, Sql, istext);
+      if FieldType <> ftBlob then
+        Sql := QuotedStr(Sql, '''');
     end;
   end;
+  if conv = tcNull then
+    Sql := 'null';
+  result := conv <> tcInvalid;
 end;
 
 

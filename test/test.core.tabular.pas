@@ -38,6 +38,8 @@ type
     function ExpectRaise(const Props: TSqlDBConnectionProperties;
       const Rows: RawUtf8; const Expected: RawUtf8 = ''): boolean;
   published
+    /// shared number/date conversion functions
+    procedure Conversions;
     /// RFC 4180 CSV reading
     procedure CsvReading;
     /// RFC 4180 CSV writing
@@ -137,6 +139,56 @@ begin
   finally
     TSynLog.Family.ExceptionIgnoreCurrentThread := false;
   end;
+end;
+
+procedure TTestCoreTabular.Conversions;
+var
+  v: variant;
+  i64: Int64;
+  d: double;
+  dt: TDateTime;
+
+  function Num(const Text: RawUtf8; Sep: AnsiChar = '.'): RawUtf8;
+  begin
+    if TabularTextToNumber(pointer(Text), length(Text), v, true, Sep) then
+      result := copy(J(_ArrFast([v])), 2, 30) // '[1.5]' -> '1.5]'
+    else
+      result := '!';
+  end;
+
+begin
+  CheckEqual(Num('42'), '42]');
+  CheckEqual(Num('-1.5'), '-1.5]');
+  CheckEqual(Num('1e3'), '1000]');
+  CheckEqual(Num('1,5', ','), '1.5]');
+  CheckEqual(Num('1.5', ','), '1.5]');
+  CheckEqual(Num('1.234,5', ','), '!', 'thousands');
+  CheckEqual(Num('007'), '!', 'leading zero');
+  CheckEqual(Num(' 1'), '!');
+  CheckEqual(Num('1.2.3'), '!');
+  CheckEqual(Num('1e'), '!');
+  CheckEqual(Num(''), '!');
+  CheckEqual(Num('12345678901234567890'), '!', 'huge integer');
+  CheckEqual(Num('9223372036854775807'), '9223372036854775807]', 'max Int64');
+  Check(TabularTextToNumber('12', 1, v) and (v = 1), 'Len');
+  Check(TabularToInt64(Null, i64) = tcNull);
+  Check(TabularToInt64('', i64) = tcNull);
+  Check((TabularToInt64('7', i64) = tcValue) and (i64 = 7));
+  Check((TabularToInt64(true, i64) = tcValue) and (i64 = 1));
+  Check((TabularToInt64(2.0, i64) = tcValue) and (i64 = 2));
+  Check(TabularToInt64(2.5, i64) = tcInvalid);
+  Check(TabularToInt64('1.5', i64) = tcInvalid);
+  Check(TabularToInt64('seven', i64) = tcInvalid);
+  Check((TabularToDouble('-0.25', d) = tcValue) and (d = -0.25));
+  Check((TabularToDouble(3, d) = tcValue) and (d = 3));
+  Check(TabularToDouble('x', d) = tcInvalid);
+  Check((TabularToDateTime('2024-02-29T13:45:30', dt) = tcValue) and
+        (DateTimeToIso8601Text(dt) = '2024-02-29T13:45:30'));
+  Check((TabularToDateTime(DateVariant(EncodeDate(2025, 1, 1)), dt) = tcValue) and
+        (dt = EncodeDate(2025, 1, 1)));
+  Check((TabularToDateTime(45000, dt) = tcValue) and (dt = 45000));
+  Check(TabularToDateTime('31.01.2024', dt) = tcInvalid, 'not ISO-8601');
+  Check(TabularToDateTime('', dt) = tcNull);
 end;
 
 procedure TTestCoreTabular.CsvReading;
