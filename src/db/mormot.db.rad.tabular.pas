@@ -155,32 +155,8 @@ implementation
 
 { ************ TTabularDataSet: Read-Only Virtual TDataSet over TDocVariant Rows }
 
-function AllBooleans(const Rows: TDocVariantData; Col: PTabularColumn;
-  ColIndex: integer): boolean;
-var
-  r: PtrInt;
-  row: PDocVariantData;
-  v: PVariant;
-  vd: PVarData;
-begin
-  result := false;
-  if Col^.FieldType <> ftInt64 then
-    exit;
-  for r := 0 to Rows.Count - 1 do
-    if _Safe(Rows.Values[r], row) then
-    begin
-      v := TabularCell(row^, Col, ColIndex);
-      if v = nil then
-        continue;
-      vd := VarDataFromVariant(v^);
-      if not (vd^.VType in [varEmpty, varNull, varBoolean]) then
-        exit;
-    end;
-  result := true;
-end;
-
-procedure DefineFields(const Columns: TTabularColumns; Rows: PDocVariantData;
-  Defs: TFieldDefs; StringAsAnsi: boolean);
+procedure TabularFieldDefs(const Columns: TTabularColumns; Defs: TFieldDefs;
+  StringAsAnsi: boolean);
 var
   f: PtrInt;
   name: string;
@@ -193,8 +169,7 @@ begin
     size := 0;
     case Columns[f].FieldType of
       mormot.db.core.ftInt64:
-        if (Rows <> nil) and
-           AllBooleans(Rows^, @Columns[f], f) then
+        if Columns[f].Booleans then
           ft := ftBoolean
         else
           ft := ftLargeint;
@@ -229,19 +204,13 @@ begin
   end;
 end;
 
-procedure TabularFieldDefs(const Columns: TTabularColumns; Defs: TFieldDefs;
-  StringAsAnsi: boolean);
-begin
-  DefineFields(Columns, nil, Defs, StringAsAnsi);
-end;
-
 procedure TabularFieldDefs(const Rows: variant; Defs: TFieldDefs;
   StringAsAnsi: boolean);
 var
   dv: PDocVariantData;
 begin
   if _SafeArray(Rows, dv) then
-    DefineFields(TabularColumns(dv^), dv, Defs, StringAsAnsi)
+    TabularFieldDefs(TabularColumns(dv^), Defs, StringAsAnsi)
   else
     Defs.Clear;
 end;
@@ -333,7 +302,7 @@ end;
 
 procedure TTabularDataSet.InternalInitFieldDefs;
 begin
-  DefineFields(fTabularColumns, _Safe(fRows), FieldDefs, fStringAsAnsi);
+  TabularFieldDefs(fTabularColumns, FieldDefs, fStringAsAnsi);
 end;
 
 

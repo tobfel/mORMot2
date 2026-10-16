@@ -403,114 +403,102 @@ begin
   end;
 end;
 
+// returns true if P^ is a _xHHHH_ XLSX escape - caller ensures PEnd - P >= 7
+function IsXlsxEscape(P: PUtf8Char): boolean;
+  {$ifdef HASINLINE} inline; {$endif}
+begin
+  result := (P[0] = '_') and
+            (P[1] = 'x') and
+            (P[6] = '_') and
+            HexToCharValid(PAnsiChar(P) + 2) and
+            HexToCharValid(PAnsiChar(P) + 4);
+end;
+
 function XlsxUnescape(const Text: RawUtf8): RawUtf8;
 var
-  P, PEnd, S: PUtf8Char;
-  code: cardinal;
-  i: PtrInt;
-  tmp: array[0..7] of AnsiChar;
-  ok: boolean;
+  P, PEnd, D: PUtf8Char;
+  tmp: RawUtf8;
 begin
-  result := Text;
   P := pointer(Text);
   if (P = nil) or
      (PosEx('_x', Text) = 0) then
-    exit; // fast path
-  result := '';
-  PEnd := P + length(Text);
-  S := P;
-  while P < PEnd do
   begin
+    result := Text; // fast path
+    exit;
+  end;
+  PEnd := P + length(Text);
+  D := FastSetString(tmp, length(Text)); // _xHHHH_ = 7 chars > 3 UTF-8 bytes
+  while P < PEnd do
     if (P^ = '_') and
        (PEnd - P >= 7) and
-       (P[1] = 'x') and
-       (P[6] = '_') then
+       IsXlsxEscape(P) then
     begin
-      code := 0;
-      ok := true;
-      for i := 2 to 5 do
-        case P[i] of
-          '0'..'9':
-            code := code shl 4 + cardinal(ord(P[i]) - ord('0'));
-          'a'..'f':
-            code := code shl 4 + cardinal(ord(P[i]) - (ord('a') - 10));
-          'A'..'F':
-            code := code shl 4 + cardinal(ord(P[i]) - (ord('A') - 10));
-        else
-          begin
-            ok := false;
-            break;
-          end;
-        end;
-      if ok then
-      begin
-        Append(result, S, P - S);
-        Append(result, @tmp, Ucs4ToUtf8(code, @tmp));
-        inc(P, 7);
-        S := P;
-        continue;
-      end;
+      inc(D, Ucs4ToUtf8(HexToWideChar(P + 2), D));
+      inc(P, 7);
+    end
+    else
+    begin
+      D^ := P^;
+      inc(D);
+      inc(P);
     end;
-    inc(P);
-  end;
-  Append(result, S, P - S);
+  FakeLength(tmp, D);
+  result := tmp;
 end;
 
 function XlsxEscape(const Text: RawUtf8): RawUtf8;
-const
-  XHEX: array[0..15] of AnsiChar = '0123456789ABCDEF';
 var
-  P, PEnd, S: PUtf8Char;
-  needed: boolean;
+  P, PEnd, D: PUtf8Char;
+  n: PtrInt;
+  tmp: RawUtf8;
 begin
   result := Text;
   P := pointer(Text);
   if P = nil then
     exit;
+  // first pass: count the chars to escape, each one being replaced by 7 chars
   PEnd := P + length(Text);
-  needed := false;
+  n := 0;
   while P < PEnd do
   begin
     if ((P^ < ' ') and
         not (P^ in [#9, #10, #13])) or
        ((P^ = '_') and
-        (P[1] = 'x')) then
-    begin
-      needed := true;
-      break;
-    end;
+        (PEnd - P >= 7) and
+        IsXlsxEscape(P)) then
+      inc(n);
     inc(P);
   end;
-  if not needed then
+  if n = 0 then
     exit; // fast path
-  result := '';
+  // second pass: write the escaped content into its final buffer
   P := pointer(Text);
-  S := P;
+  D := FastSetString(tmp, length(Text) + n * 6);
   while P < PEnd do
   begin
     if (P^ < ' ') and
        not (P^ in [#9, #10, #13]) then
     begin
-      Append(result, S, P - S);
-      Append(result, ['_x00', XHEX[ord(P^) shr 4], XHEX[ord(P^) and 15], '_']);
-      S := P + 1;
+      PCardinal(D)^ := ord('_') + ord('x') shl 8 + ord('0') shl 16 + ord('0') shl 24;
+      D := PUtf8Char(ByteToHex(PAnsiChar(D) + 4, ord(P^)));
+      D^ := '_';
+      inc(D);
     end
     else if (P^ = '_') and
             (PEnd - P >= 7) and
-            (P[1] = 'x') and
-            (P[6] = '_') and
-            (P[2] in ['0'..'9', 'a'..'f', 'A'..'F']) and
-            (P[3] in ['0'..'9', 'a'..'f', 'A'..'F']) and
-            (P[4] in ['0'..'9', 'a'..'f', 'A'..'F']) and
-            (P[5] in ['0'..'9', 'a'..'f', 'A'..'F']) then
+            IsXlsxEscape(P) then
     begin
-      Append(result, S, P - S);
-      Append(result, '_x005F_'); // escape the '_' of an existing _xHHHH_
-      S := P + 1;
+      MoveFast(PAnsiChar('_x005F_')^, D^, 7); // escape the '_' of _xHHHH_
+      inc(D, 7);
+    end
+    else
+    begin
+      D^ := P^;
+      inc(D);
     end;
     inc(P);
   end;
-  Append(result, S, P - S);
+  result := tmp;
 end;
 
 function XlsxSheetName(const Name: RawUtf8; Index: integer): RawUtf8;
@@ -825,8 +813,11 @@ begin
   if x.Find('/styleSheet/numFmts') then
     while x.Consume('numFmt', d) do
     begin
-      SetLength(fmtids, fmtcount + 1);
-      SetLength(fmtdate, fmtcount + 1);
+      if fmtcount = length(fmtids) then
+      begin
+        SetLength(fmtids, NextGrow(fmtcount));
+        SetLength(fmtdate, length(fmtids));
+      end;
       fmtids[fmtcount] := d.I['@numFmtId'];
       fmtdate[fmtcount] := XlsxIsDateFormat(d.U['@formatCode']);
       inc(fmtcount);
@@ -844,10 +835,12 @@ begin
           isdate := fmtdate[i]; // custom format overrides built-in
           break;
         end;
-      SetLength(fDateStyle, xfcount + 1);
+      if xfcount = length(fDateStyle) then
+        SetLength(fDateStyle, NextGrow(xfcount));
       fDateStyle[xfcount] := isdate;
       inc(xfcount);
     end;
+  SetLength(fDateStyle, xfcount); // ReadSheet() checks length(fDateStyle)
 end;
 
 procedure TXlsxDocument.ReadSheet(const Xml: RawUtf8);
@@ -1617,7 +1610,8 @@ begin
       // xl/worksheets/sheet#.xml
       for i := 0 to fSheetCount - 1 do
       begin
-        Add(Utf8ToString('xl/' + SheetPath(i)), fSheetXml[i]);
+        Add(Utf8ToString(Make(['xl/worksheets/sheet', i + 1, '.xml'])),
+          fSheetXml[i]);
         fSheetXml[i] := ''; // release memory ASAP
       end;
     finally

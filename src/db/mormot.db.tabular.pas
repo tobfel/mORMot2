@@ -67,6 +67,8 @@ type
     MaxLength: integer;
     /// true if at least one row has a null/void/missing value in this column
     HasNull: boolean;
+    /// true if FieldType is ftInt64 and all non-null values are booleans
+    Booleans: boolean;
   end;
   PTabularColumn = ^TTabularColumn;
 
@@ -221,15 +223,25 @@ end;
 const
   NUMRANK: array[TSqlDBFieldType] of byte = (0, 0, 1, 3, 2, 0, 0, 0);
 
+type
+  // per-column counters, to compute HasNull and Booleans in a single pass
+  TColumnCount = record
+    Seen, Values, Booleans: integer;
+  end;
+  TColumnCounts = array of TColumnCount;
+
 // merge the type of one value into the column type
-procedure MergeType(Col: PTabularColumn; const Value: variant);
+procedure MergeType(Col: PTabularColumn; var Count: TColumnCount;
+  const Value: variant);
 var
   vd: PVarData;
   t: TSqlDBFieldType;
-  L: integer;
+  L: PtrInt;
   s: RawUtf8;
   istext: boolean;
+  tmp: TTempUtf8;
 begin
+  inc(Count.Seen);
   vd := VarDataFromVariant(Value);
   case vd^.VType of
     varEmpty,
@@ -238,7 +250,12 @@ begin
         Col^.HasNull := true;
         exit;
       end;
-    varBoolean, varSmallint, varInteger, varShortInt, varByte, varWord,
+    varBoolean:
+      begin
+        t := ftInt64;
+        inc(Count.Booleans);
+      end;
+    varSmallint, varInteger, varShortInt, varByte, varWord,
     varLongWord, varInt64, varWord64:
       t := ftInt64;
     varCurrency:
@@ -248,17 +265,28 @@ begin
       t := ftDouble;
     varDate:
       t := ftDate;
+    varString:
+      begin
+        t := ftUtf8;
+        if vd^.VAny = nil then
+          Col^.HasNull := true; // a void string is stored as null by some DB
+        L := Utf8ToUnicodeLength(vd^.VAny); // no temporary string
+        if L > Col^.MaxLength then
+          Col^.MaxLength := L;
+      end;
   else
     begin
+      // seldom used other string types, or nested TDocVariant as JSON
       t := ftUtf8;
       TabularValueToText(PVariant(vd)^, s, istext);
       if s = '' then
-        Col^.HasNull := true; // a void string is stored as null by some DB
+        Col^.HasNull := true;
       L := Utf8ToUnicodeLength(pointer(s));
       if L > Col^.MaxLength then
         Col^.MaxLength := L;
     end;
   end;
+  inc(Count.Values);
   if Col^.FieldType = ftUnknown then
     Col^.FieldType := t
   else if Col^.FieldType <> t then
@@ -274,11 +302,11 @@ begin
   if (Col^.FieldType = ftUtf8) and
      (t <> ftUtf8) then
   begin
-    // e.g. a number in a text column: include its text length
-    TabularValueToText(PVariant(vd)^, s, istext);
-    L := length(s);
-    if L > Col^.MaxLength then
-      Col^.MaxLength := L;
+    // e.g. a number in a text column: include its (ASCII) text length
+    VariantToTempUtf8(PVariant(vd)^, tmp);
+    if tmp.Len > Col^.MaxLength then
+      Col^.MaxLength := tmp.Len;
+    TempUtf8Done(tmp);
   end;
 end;
 
@@ -287,9 +315,23 @@ var
   r, i, n, ndx: PtrInt;
   row: PDocVariantData;
   col: PTabularColumn;
+  cols: TTabularColumns;
+  counts: TColumnCounts;
   name: RawUtf8;
+
+  function AddColumn(const ColName: RawUtf8): PtrInt;
+  begin
+    if n = length(cols) then
+    begin
+      SetLength(cols, NextGrow(n));
+      SetLength(counts, length(cols));
+    end;
+    cols[n].Name := ColName;
+    result := n;
+    inc(n);
+  end;
+
 begin
-  result := nil;
   n := 0;
   for r := 0 to Rows.Count - 1 do
     if _Safe(Rows.Values[r], row) then
@@ -298,64 +340,48 @@ begin
         begin
           // locate (or add) the column - fast path for same field order
           if (i < n) and
-             (result[i].Name = row^.Names[i]) then
+             (cols[i].Name = row^.Names[i]) then
             ndx := i
           else
           begin
             ndx := n - 1;
             while (ndx >= 0) and
-                  not IdemPropNameU(result[ndx].Name, row^.Names[i]) do
+                  not IdemPropNameU(cols[ndx].Name, row^.Names[i]) do
               dec(ndx);
+            if ndx < 0 then
+              ndx := AddColumn(row^.Names[i]);
           end;
-          if ndx < 0 then
-          begin
-            if n = length(result) then
-              SetLength(result, NextGrow(n));
-            ndx := n;
-            result[ndx].Name := row^.Names[i];
-            result[ndx].HasNull := r > 0; // previous rows did not have it
-            inc(n);
-          end;
-          MergeType(@result[ndx], row^.Values[i]);
+          MergeType(@cols[ndx], counts[ndx], row^.Values[i]);
         end
       else
         for i := 0 to row^.Count - 1 do
         begin
           if i >= n then
-          begin
-            if n = length(result) then
-              SetLength(result, NextGrow(n));
-            result[n].Name := Make(['Col', n + 1]);
-            result[n].HasNull := r > 0;
-            inc(n);
-          end;
-          MergeType(@result[i], row^.Values[i]);
+            AddColumn(Make(['Col', n + 1]));
+          MergeType(@cols[i], counts[i], row^.Values[i]);
         end;
-  SetLength(result, n);
-  // detect missing fields in later rows, finalize types and SQL names
+  SetLength(cols, n);
+  // finalize HasNull (missing in some rows), Booleans, types and SQL names
   for i := 0 to n - 1 do
   begin
-    col := @result[i];
-    if not col^.HasNull then
-      for r := 0 to Rows.Count - 1 do
-        if not _Safe(Rows.Values[r], row) or
-           (TabularCell(row^, col, i) = nil) then
-        begin
-          col^.HasNull := true;
-          break;
-        end;
+    col := @cols[i];
+    if counts[i].Seen < Rows.Count then
+      col^.HasNull := true;
     if col^.FieldType = ftUnknown then
       col^.FieldType := ftUtf8; // only null values
+    col^.Booleans := (col^.FieldType = ftInt64) and
+                     (counts[i].Booleans = counts[i].Values);
     name := TabularSqlName(col^.Name);
     ndx := 2;
     col^.SqlName := name;
     while (i > 0) and
-          (FindRawUtf8Sql(result, col^.SqlName, i) >= 0) do
+          (FindRawUtf8Sql(cols, col^.SqlName, i) >= 0) do
     begin
       col^.SqlName := Make([name, '_', ndx]);
       inc(ndx);
     end;
   end;
+  result := cols;
 end;
 
 function TabularColumns(const Rows: variant): TTabularColumns;
@@ -517,6 +543,44 @@ var
   n, f, i, j, r, chunk, start: PtrInt;
   batch: boolean;
 
+  function InsertSql(Unnest: boolean): RawUtf8;
+  var
+    w: TTextWriter;
+    tmp: TTextWriterStackBuffer;
+    f: PtrInt;
+  begin
+    w := TTextWriter.CreateOwnedStream(tmp);
+    try
+      w.AddShort('insert into ');
+      w.AddString(TableName);
+      w.AddDirect(' ', '(');
+      for f := 0 to n - 1 do
+      begin
+        w.AddString(names[f]);
+        w.AddComma;
+      end;
+      w.CancelLastComma;
+      w.AddShort(') values (');
+      for f := 0 to n - 1 do
+      begin
+        if Unnest then
+        begin
+          // PostgreSQL 'insert ... values (unnest(?::int8[]),..)'
+          w.AddShort('unnest(?::');
+          w.AddString(PG_FT[types[f]]);
+          w.AddShort('[])');
+        end
+        else
+          w.Add('?');
+        w.AddComma;
+      end;
+      w.CancelLastComma(')');
+      w.SetText(result);
+    finally
+      w.Free;
+    end;
+  end;
+
   procedure CellToSql(r, f: PtrInt; var Sql: RawUtf8);
   begin
     cell := nil;
@@ -606,7 +670,7 @@ begin
     conn.StartTransaction;
   try
     if tsoDeleteFirst in Options then
-      Props.ExecuteNoResult('delete from ' + TableName, []);
+      Props.ExecuteNoResult(Make(['delete from ', TableName]), []);
     // same logic than the mORMot ORM TRestStorageExternal.InternalBatchStop
     batch := not (tsoNoBatch in Options) and
              (cCreate in Props.BatchSendingAbilities);
@@ -620,21 +684,8 @@ begin
     begin
       if not Assigned(Props.OnBatchInsert) then
       begin
-        // array binding: PostgreSQL 'insert ... values (unnest(?::int8[]),..)'
-        // or Oracle/FireDAC/ZEOS 'insert ... values (?,..)' array DML
-        sql := 'insert into ' + TableName + ' (' +
-          RawUtf8ArrayToCsv(names, ',') + ') values (';
-        for f := 0 to n - 1 do
-        begin
-          if cPostgreBulkArray in Props.BatchSendingAbilities then
-            sql := Make([sql, 'unnest(?::', PG_FT[types[f]], '[])'])
-          else
-            sql := sql + '?';
-          if f = n - 1 then
-            sql := sql + ')'
-          else
-            sql := sql + ',';
-        end;
+        // array binding: PostgreSQL unnest() or Oracle/FireDAC/ZEOS array DML
+        sql := InsertSql(cPostgreBulkArray in Props.BatchSendingAbilities);
         if (Props.BatchMaxSentAtOnce > 0) and
            (BatchRows > Props.BatchMaxSentAtOnce) then
           BatchRows := Props.BatchMaxSentAtOnce;
@@ -674,13 +725,7 @@ begin
     else
     begin
       // one prepared INSERT statement per row
-      sql := 'insert into ' + TableName + ' (' +
-        RawUtf8ArrayToCsv(names, ',') + ') values (';
-      for f := 1 to n do
-        if f = n then
-          sql := sql + '?)'
-        else
-          sql := sql + '?,';
+      sql := InsertSql(false);
       stmt := Props.NewThreadSafeStatement;
       try
         stmt.Prepare(sql, {expectresults=}false);

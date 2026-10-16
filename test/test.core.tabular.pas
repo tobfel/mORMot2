@@ -467,6 +467,12 @@ begin
     CheckEqual(XlsxColumnName(0) + XlsxColumnName(25) + XlsxColumnName(26) +
       XlsxColumnName(701) + XlsxColumnName(702), 'AZAAZZAAA', 'column names');
     CheckEqual(XlsxColumnIndex('XFD1048576', 10), 16383, 'column index');
+    CheckEqual(XlsxEscape('a'#1'b_x0041_c'), 'a_x0001_b_x005F_x0041_c', 'escape');
+    CheckEqual(XlsxEscape('plain_xyz'), 'plain_xyz', 'escape none');
+    CheckEqual(XlsxUnescape('a_x0001_b_x005F_x0041_c'), 'a'#1'b_x0041_c',
+      'unescape');
+    CheckEqualHex(XlsxUnescape('_x00E4__x20ac_'), 'c3a4e282ac', 'unescape utf-8');
+    CheckEqual(XlsxUnescape('_x12G4_'), '_x12G4_', 'unescape invalid');
     Check(XlsxIsDateFormat('dd/mm/yyyy') and
           XlsxIsDateFormat('[h]:mm') and
           not XlsxIsDateFormat('0.00E+00') and
@@ -511,10 +517,12 @@ begin
     'amount/amount=ftDouble:0:0 ok/ok=ftInt64:0:0 order/order=ftUtf8:1:1 ' +
     '1st/_1st=ftUtf8:1:0 when/when=ftDate:0:1 note/note=ftUtf8:300:1 ',
     'TabularColumns');
+  Check(cols[3].Booleans and not cols[0].Booleans, 'Booleans');
   cols := TabularColumns(_JsonFast('[[1,"a"],[2.5],[3,"bb",true]]'));
   CheckEqual(Make([length(cols), cols[0].Name, ToText(cols[0].FieldType)^,
     cols[2].Name, ord(cols[1].HasNull), ord(cols[2].HasNull)]),
     '3Col1ftCurrencyCol311', 'array rows');
+  Check(not cols[0].Booleans and cols[2].Booleans, 'Booleans array rows');
   CheckEqual(TabularSqlName(HexToBin('53747261c39f65204e722e')), 'Stra__e_Nr_',
     'sql name utf-8');
   // import/export via SQLite3
