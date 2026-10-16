@@ -200,7 +200,7 @@ FileFromString(VariantToXlsx(DataSetToTabular(Query1)), 'export.xlsx');
 | `TTabularDataSet` | read-only `TDataSet` directly on top of the rows (based on `TDocVariantArrayDataSet`), but with field types and string lengths taken from **all** rows; pure boolean columns as `TBooleanField`, array rows as `Col1`, `Col2` ..., texts > 4000 characters as memo |
 | `TabularFieldDefs(Rows, Defs, StringAsAnsi)` | fill `FieldDefs` matching the rows (before `CreateDataSet`) |
 | `TabularAppendToDataSet(Rows, Dest, Options)` | Append/Post per row, fields matched by name, values converted to the respective `TField.DataType`; on error `Cancel` + `ETabularDataSet` with row and field |
-| `DataSetToTabular(Source, MaxRows)` | all records -> rows (Int64, Double, Currency for BCD, Boolean, `varDate`, UTF-8 text, BLOB as Base64); the position is restored |
+| `DataSetToTabular(Source, MaxRows)` | all records -> rows (Int64, Double, Currency for BCD, Boolean, `varDate`, UTF-8 text, BLOB as Base64 with magic, like `DataSetToJson`); the position is restored |
 | `TabularValueToField` / `FieldToTabularValue` | single value conversion |
 
 `TTabularDataSetOptions`: `tdoIgnoreUnknownFields`, `tdoEmptyFirst`, `tdoKeepControls`.

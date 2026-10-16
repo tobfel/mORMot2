@@ -37,6 +37,7 @@ uses
   mormot.core.unicode,
   mormot.core.text,
   mormot.core.datetime,
+  mormot.core.rtti,
   mormot.core.buffers,
   mormot.core.data,
   mormot.core.variants,
@@ -171,9 +172,7 @@ begin
       v := TabularCell(row^, Col, ColIndex);
       if v = nil then
         continue;
-      vd := pointer(v);
-      while vd^.VType = varVariantByRef do
-        vd := vd^.VPointer;
+      vd := VarDataFromVariant(v^);
       if not (vd^.VType in [varEmpty, varNull, varBoolean]) then
         exit;
     end;
@@ -350,6 +349,7 @@ var
   d: double;
   dt: TDateTime;
   bcd: TBcd;
+  bin: RawByteString;
   blob: TRawByteStringStream;
 begin
   result := true;
@@ -368,16 +368,19 @@ begin
         if conv = tcValue then
           Field.AsBoolean := i64 <> 0
         else if conv = tcInvalid then
-          if IdemPropNameU(PVariant(vd)^, 'true') then
+        begin
+          TabularValueToText(PVariant(vd)^, text, istext);
+          if IdemPropNameU(text, 'true') then
           begin
             Field.AsBoolean := true;
             conv := tcValue;
           end
-          else if IdemPropNameU(PVariant(vd)^, 'false') then
+          else if IdemPropNameU(text, 'false') then
           begin
             Field.AsBoolean := false;
             conv := tcValue;
           end;
+        end;
       end;
     ftSmallint,
     ftInteger,
@@ -425,8 +428,11 @@ begin
     ftBytes,
     ftVarBytes:
       begin
+        // Base64 with magic, as DataSetToJson() or FieldToTabularValue()
         TabularValueToText(PVariant(vd)^, text, istext);
-        blob := TRawByteStringStream.Create(text);
+        if not Base64MagicCheckAndDecode(pointer(text), length(text), bin) then
+          bin := text; // raw binary
+        blob := TRawByteStringStream.Create(bin);
         try
           (Field as TBlobField).LoadFromStream(blob);
         finally
@@ -608,7 +614,7 @@ begin
         blob := TRawByteStringStream.Create;
         try
           (Field as TBlobField).SaveToStream(blob);
-          RawUtf8ToVariant(BinToBase64(blob.DataString), Value);
+          RawUtf8ToVariant(BinToBase64WithMagic(blob.DataString), Value);
         finally
           blob.Free;
         end;

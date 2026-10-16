@@ -73,21 +73,6 @@ type
   // - a nil pointer means that the cell does not exist (e.g. a missing field)
   TTabularCells = array of PVariant;
 
-  /// an append-only TStream with geometric growth of its RawUtf8 buffer
-  // - TRawByteStringStream reallocates its buffer at each Write() call,
-  // which is slow with some memory managers (e.g. FPC RTL or Delphi 7 default
-  // MM) when generating dozens of MB - this class reallocates only O(log(n))
-  // - as used by TTabularDocument.WriterStart for its TTextWriter
-  TTabularOutputStream = class(TStreamWithNoSeek)
-  protected
-    fData: RawUtf8;
-  public
-    /// append some data to the internal buffer
-    function Write(const Buffer; Count: Longint): Longint; override;
-    /// retrieve the whole written content, and reset this instance
-    procedure GetText(var Text: RawUtf8);
-  end;
-
 const
   /// default TTabularDocument options
   TABULAR_DEFAULT = [tboHeader, tboSkipEmptyRows];
@@ -127,7 +112,6 @@ type
     fMaxRowsReached: boolean;
     // writing context
     fW: TTextWriter;
-    fOut: TTabularOutputStream;
     fWriteCells: TTabularCells;
     fWriteColumns: TRawUtf8DynArray;
     fWriteColumnCount: integer;
@@ -172,9 +156,9 @@ type
     /// main writing method - may be overriden e.g. for XLSX multi-sheets
     function DoSave(const Doc: TDocVariantData): RawByteString; virtual;
     procedure RaiseError(const Fmt: RawUtf8; const Args: array of const);
-    /// initialize fW: TTextWriter over a fOut: TTabularOutputStream
+    /// initialize fW: TTextWriter over its own RawUtf8 buffer
     procedure WriterStart;
-    /// finalize fW/fOut and return the generated text
+    /// finalize fW and return the generated text
     procedure WriterText(var Text: RawUtf8);
   public
     /// initialize this instance with the default options
@@ -304,48 +288,34 @@ implementation
 procedure TabularDecodeText(const Data: RawByteString; CodePage: cardinal;
   var Text: RawUtf8);
 var
-  L, i: PtrInt;
+  P: pointer;
+  L: PtrInt;
   tmp: RawByteString;
-  w: PWordArray;
 begin
+  P := pointer(Data);
   L := length(Data);
-  if L >= 2 then
-    if (L >= 3) and
-       (PByteArray(Data)[0] = $ef) and
-       (PByteArray(Data)[1] = $bb) and
-       (PByteArray(Data)[2] = $bf) then
-    begin
-      // UTF-8 BOM
-      FastSetString(Text, PAnsiChar(pointer(Data)) + 3, L - 3);
-      exit;
-    end
-    else if (PByteArray(Data)[0] = $ff) and
-            (PByteArray(Data)[1] = $fe) then
-    begin
-      // UTF-16 LE BOM
-      RawUnicodeToUtf8(PWideChar(PAnsiChar(pointer(Data)) + 2), (L - 2) shr 1, Text);
-      exit;
-    end
-    else if (PByteArray(Data)[0] = $fe) and
-            (PByteArray(Data)[1] = $ff) then
-    begin
-      // UTF-16 BE BOM: swap into LE then convert
-      SetString(tmp, PAnsiChar(pointer(Data)) + 2, L - 2);
-      w := pointer(tmp);
-      for i := 0 to ((L - 2) shr 1) - 1 do
-        w[i] := swap(w[i]);
-      RawUnicodeToUtf8(pointer(tmp), (L - 2) shr 1, Text);
-      exit;
-    end;
-  if (CodePage = CP_UTF8) or
-     ((CodePage = 0) and
-      IsValidUtf8(Data)) then
-    Text := Data // no conversion needed (just a refcount)
+  case BomFile(P, L) of
+    bomUtf8:
+      FastSetString(Text, P, L);
+    bomUtf16LE:
+      RawUnicodeToUtf8(P, L shr 1, Text);
+    bomUtf16BE:
+      begin
+        FastSetRawByteString(tmp, P, L); // don't modify the const input
+        bswap16array(pointer(tmp), L shr 1);
+        RawUnicodeToUtf8(pointer(tmp), L shr 1, Text);
+      end;
   else
-  begin
-    if CodePage = 0 then
-      CodePage := CP_WINANSI;
-    TSynAnsiConvert.Engine(CodePage).AnsiToUtf8(Data, Text);
+    if (CodePage = CP_UTF8) or
+       ((CodePage = 0) and
+        IsValidUtf8(Data)) then
+      Text := Data // no conversion needed (just a refcount)
+    else
+    begin
+      if CodePage = 0 then
+        CodePage := CP_WINANSI;
+      TSynAnsiConvert.Engine(CodePage).AnsiToUtf8(Data, Text);
+    end;
   end;
 end;
 
@@ -376,9 +346,7 @@ function TabularIsDate(const Value: variant; out DateTime: TDateTime): boolean;
 var
   vd: PVarData;
 begin
-  vd := @Value;
-  while vd^.VType = varVariantByRef do
-    vd := vd^.VPointer;
+  vd := VarDataFromVariant(Value);
   result := vd^.VType = varDate;
   if result then
     DateTime := vd^.VDate;
@@ -507,7 +475,11 @@ begin
     varEmpty,
     varNull:
       result := tcNull;
-    varString:
+    varString,
+    {$ifdef HASVARUSTRING}
+    varUString,
+    {$endif HASVARUSTRING}
+    varOleStr:
       if vd^.VAny = nil then
         result := tcNull
       else if not VariantToDateTime(PVariant(vd)^, Dest) then
@@ -529,9 +501,7 @@ var
 begin
   IsText := false;
   isfloat := false;
-  vd := @Value;
-  while vd^.VType = varVariantByRef do
-    vd := vd^.VPointer;
+  vd := VarDataFromVariant(Value);
   case vd^.VType of
     varEmpty,
     varNull:
@@ -585,38 +555,6 @@ end;
 
 { ************ TTabularDocument Abstract Parent Class }
 
-{ TTabularOutputStream }
-
-function TTabularOutputStream.Write(const Buffer; Count: Longint): Longint;
-var
-  needed: PtrInt;
-begin
-  result := Count;
-  if Count <= 0 then
-    exit;
-  needed := fPosition + Count;
-  if needed > length(fData) then
-    SetLength(fData, needed + needed shr 1 + 65536); // geometric growth
-  MoveFast(Buffer, PByteArray(fData)[fPosition], Count);
-  fPosition := needed;
-  fSize := needed;
-end;
-
-procedure TTabularOutputStream.GetText(var Text: RawUtf8);
-begin
-  if fSize = 0 then
-    Text := ''
-  else
-  begin
-    SetLength(fData, fSize); // in-place shrink
-    Text := fData;
-  end;
-  fData := '';
-  fPosition := 0;
-  fSize := 0;
-end;
-
-
 { TTabularDocument }
 
 constructor TTabularDocument.Create(aOptions: TTabularOptions);
@@ -630,26 +568,22 @@ end;
 destructor TTabularDocument.Destroy;
 begin
   FreeAndNil(fW);
-  FreeAndNil(fOut);
   inherited Destroy;
 end;
 
 procedure TTabularDocument.WriterStart;
 begin
   FreeAndNil(fW);
-  FreeAndNil(fOut);
-  fOut := TTabularOutputStream.Create;
-  fW := TTextWriter.Create(fOut, 65536);
+  // big buffer = few TRawByteStringStream reallocs (2x faster on FPC RTL heap)
+  fW := TTextWriter.CreateOwnedStream(1 shl 20);
 end;
 
 procedure TTabularDocument.WriterText(var Text: RawUtf8);
 begin
   try
-    fW.FlushFinal;
-    fOut.GetText(Text);
+    fW.SetText(Text);
   finally
     FreeAndNil(fW);
-    FreeAndNil(fOut);
   end;
 end;
 
@@ -995,9 +929,7 @@ begin
   for r := 0 to Rows.Count - 1 do
   begin
     fWriteRowIndex := r;
-    vd := @Rows.Values[r];
-    while vd^.VType = varVariantByRef do
-      vd := vd^.VPointer;
+    vd := VarDataFromVariant(Rows.Values[r]);
     if _Safe(PVariant(vd)^, row) then
       if row^.IsObject then
       begin

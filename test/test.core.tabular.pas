@@ -14,6 +14,8 @@ uses
   mormot.core.unicode,
   mormot.core.text,
   mormot.core.datetime,
+  mormot.core.rtti,
+  mormot.core.data,
   mormot.core.variants,
   mormot.core.json,
   mormot.core.log,

@@ -230,9 +230,7 @@ var
   s: RawUtf8;
   istext: boolean;
 begin
-  vd := @Value;
-  while vd^.VType = varVariantByRef do
-    vd := vd^.VPointer;
+  vd := VarDataFromVariant(Value);
   case vd^.VType of
     varEmpty,
     varNull:

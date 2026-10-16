@@ -269,18 +269,24 @@ implementation
 
 { ************ Low-Level XLSX Helper Functions }
 
-function XlsxColumnName(Col: integer): RawUtf8;
-var
-  tmp: array[0..7] of AnsiChar;
-  i: PtrInt;
+// write the column letters backwards from Dest^, returning the first char
+function ColumnLetters(Col: integer; Dest: PAnsiChar): PAnsiChar;
 begin
-  i := high(tmp);
   repeat
-    tmp[i] := AnsiChar(ord('A') + Col mod 26);
-    dec(i);
+    Dest^ := AnsiChar(ord('A') + Col mod 26);
+    dec(Dest);
     Col := Col div 26 - 1;
   until Col < 0;
-  FastSetString(result, @tmp[i + 1], high(tmp) - i);
+  result := Dest + 1;
+end;
+
+function XlsxColumnName(Col: integer): RawUtf8;
+var
+  tmp: TTemp24;
+  P: PAnsiChar;
+begin
+  P := ColumnLetters(Col, @tmp[high(tmp)]);
+  FastSetString(result, P, PAnsiChar(@tmp[high(tmp)]) - P + 1);
 end;
 
 function XlsxColumnIndex(Ref: PUtf8Char; RefLen: PtrInt): integer;
@@ -622,16 +628,6 @@ begin
   result := Make([copy(Part, 1, i), '_rels/', copy(Part, i + 1, maxInt), '.rels']);
 end;
 
-function EndsWith(const Text, Suffix: RawUtf8): boolean;
-var
-  L: PtrInt;
-begin
-  L := length(Suffix);
-  result := (length(Text) >= L) and
-            CompareMemSmall(PAnsiChar(pointer(Text)) + length(Text) - L,
-              pointer(Suffix), L);
-end;
-
 constructor TXlsxDocument.Create(aOptions: TTabularOptions);
 begin
   inherited Create(aOptions);
@@ -710,7 +706,7 @@ begin
     x.Init(rels, [xpoStripNamespacePrefix]);
     if x.Find('/Relationships') then
       while x.Consume('Relationship', d) do
-        if EndsWith(d.U['@Type'], '/officeDocument') then
+        if EndWithExact(d.U['@Type'], '/officeDocument') then
         begin
           fWorkbookPath := ResolvePath('', d.U['@Target']);
           break;
@@ -725,11 +721,11 @@ begin
     begin
       typ := d.U['@Type'];
       target := ResolvePath(fWorkbookPath, d.U['@Target']);
-      if EndsWith(typ, '/sharedStrings') then
+      if EndWithExact(typ, '/sharedStrings') then
         fSharedPath := target
-      else if EndsWith(typ, '/styles') then
+      else if EndWithExact(typ, '/styles') then
         fStylesPath := target
-      else if EndsWith(typ, '/worksheet') then
+      else if EndWithExact(typ, '/worksheet') then
       begin
         AddRawUtf8(ids, n, d.U['@Id']);
         SetLength(targets, n);
@@ -1160,16 +1156,11 @@ end;
 
 procedure TXlsxDocument.WriteCellRef(Col: integer);
 var
-  tmp: array[0..7] of AnsiChar;
-  i: PtrInt;
+  tmp: TTemp24;
+  P: PAnsiChar;
 begin
-  i := high(tmp);
-  repeat
-    tmp[i] := AnsiChar(ord('A') + Col mod 26);
-    dec(i);
-    Col := Col div 26 - 1;
-  until Col < 0;
-  fW.AddNoJsonEscape(@tmp[i + 1], high(tmp) - i);
+  P := ColumnLetters(Col, @tmp[high(tmp)]);
+  fW.AddNoJsonEscape(P, PAnsiChar(@tmp[high(tmp)]) - P + 1);
   fW.Add(fRowNum);
 end;
 
@@ -1182,9 +1173,7 @@ var
   dt: TDateTime;
   w: integer;
 begin
-  vd := @Value;
-  while vd^.VType = varVariantByRef do
-    vd := vd^.VPointer;
+  vd := VarDataFromVariant(Value);
   case vd^.VType of
     varEmpty,
     varNull:
@@ -1431,9 +1420,8 @@ end;
 
 function TXlsxDocument.WriteEnd: RawByteString;
 var
-  dest: TTabularOutputStream;
+  dest: TRawByteStringStream;
   zip: TZipWrite;
-  bin: RawUtf8;
   w: TTextWriter;
   i: PtrInt;
   xml: RawUtf8;
@@ -1456,7 +1444,7 @@ begin
     WriteSheetEnd;
   end;
   w := TTextWriter.CreateOwnedStream(65536);
-  dest := TTabularOutputStream.Create;
+  dest := TRawByteStringStream.Create;
   try
     zip := TZipWrite.Create(dest);
     try
@@ -1566,7 +1554,7 @@ begin
         'applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle ' +
         'name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>');
       // xl/sharedStrings.xml
-      WriterStart; // may be huge: use our TTabularOutputStream
+      WriterStart;
       fW.AddShort(XLSX_HEADER);
       fW.AddString('<sst xmlns="' + XLSX_MAIN + '" count="');
       fW.Add(fSstTotal);
@@ -1598,8 +1586,7 @@ begin
     finally
       zip.Free; // write the .zip central directory
     end;
-    dest.GetText(bin);
-    result := bin;
+    result := dest.DataString;
   finally
     dest.Free;
     w.Free;
