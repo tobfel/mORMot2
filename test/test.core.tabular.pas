@@ -332,6 +332,17 @@ begin
       EncodeTime(18, 30, 0, 0)), 'c', CurrVariant(1.5), 'i', CurrVariant(2)])], JSON_FAST);
     CheckEqual(c.Save(v), 'd,c,i'#13#10'2024-12-24T18:30:00,1.5,2'#13#10,
       'date and currency');
+    // quoting of numbers: cqAll, and decimal separator = delimiter
+    c.Quoting := cqAll;
+    c.CsvOptions := [csoEscapeFormulas];
+    CheckEqual(c.Save(_JsonFast('[{"a":1,"b":null,"c":"=x","d":true}]')),
+      '"a","b","c","d"'#13#10'"1","","''=x","true"'#13#10, 'cqAll');
+    c.Quoting := cqMinimal;
+    c.CsvOptions := [];
+    c.DecimalSeparator := ',';
+    v := _Arr([_ObjFast(['v', 1.5, 'c', CurrVariant(2.5), 'i', 2])], JSON_FAST);
+    CheckEqual(c.Save(v), 'v,c,i'#13#10'"1,5","2,5",2'#13#10, 'decimal = delimiter');
+    c.DecimalSeparator := '.';
     // round-trip with tboEmptyAsNull keeps "" vs null distinction
     c.Options := [tboHeader, tboEmptyAsNull, tboGuessTypes];
     s := c.Save(_JsonFast('[{"a":"","b":null,"c":"007","d":7}]'));

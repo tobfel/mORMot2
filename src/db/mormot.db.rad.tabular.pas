@@ -408,7 +408,7 @@ begin
       end;
     ftFMTBcd:
       begin
-        TabularValueToText(PVariant(vd)^, text, istext, '.');
+        TabularValueToText(PVariant(vd)^, text, istext);
         if TryUtf8ToBcd(text, bcd) then
           Field.AsBCD := bcd
         else

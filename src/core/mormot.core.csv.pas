@@ -36,6 +36,7 @@ uses
   mormot.core.os,
   mormot.core.unicode,
   mormot.core.text,
+  mormot.core.datetime,
   mormot.core.data,
   mormot.core.variants,
   mormot.core.tabular;
@@ -110,7 +111,7 @@ type
     procedure WriteRow(const Cells: TTabularCells; Count: integer); override;
     function WriteEnd: RawByteString; override;
     procedure WriteNewRecord;
-    procedure WriteField(const Text: RawUtf8; IsText: boolean);
+    procedure WriteField(P: PUtf8Char; L: PtrInt; IsText: boolean);
   public
     /// initialize this instance with the default options
     // - Delimiter=',', Quote='"', LineBreak=CRLF, Quoting=cqMinimal
@@ -244,10 +245,23 @@ end;
 procedure TCsvDocument.Parse(const Data: RawByteString);
 var
   text, field: RawUtf8;
-  P, PEnd, S, D: PUtf8Char;
+  P, PEnd, S, D, E, T: PUtf8Char;
   q, delim: AnsiChar;
   quotes, fields, expected: PtrInt;
   strict: boolean;
+
+  procedure ReadQuoted(P: PUtf8Char; L: PtrInt; Source: PRawUtf8);
+  begin
+    if (L = 0) and
+       (tboEmptyAsNull in fOptions) then
+    begin
+      RawUtf8ToVariant('', NewCell^); // "" is a void string, not null
+      inc(fCellNotEmpty);
+    end
+    else
+      ReadCellBuffer(P, L, {guess=}false, Source); // quoted = always text
+  end;
+
 begin
   TabularDecodeText(Data, fCodePage, text);
   P := pointer(text);
@@ -320,13 +334,26 @@ begin
             inc(fLine);
           inc(P);
         until false;
-        // second pass to unescape the content
-        if quotes = 0 then
-          FastSetString(field, S, P - S)
+        E := P; // closing quote position
+        if P < PEnd then
+          inc(P); // skip closing quote
+        T := P;
+        while (P < PEnd) and
+              (P^ <> delim) and
+              (P^ <> #13) and
+              (P^ <> #10) do
+          inc(P); // lenient mode: keep trailing chars as-is, e.g. "a"b -> ab
+        if strict and
+           (P <> T) then
+          RaiseCsv('unexpected character after closing quote');
+        if (quotes = 0) and
+           (P = T) then
+          ReadQuoted(S, E - S, nil) // most common case: no temporary string
         else
         begin
-          D := FastSetString(field, (P - S) - quotes);
-          while S < P do
+          // unescape "" and append any trailing chars
+          D := FastSetString(field, (E - S) - quotes + (P - T));
+          while S < E do
           begin
             D^ := S^;
             inc(D);
@@ -335,34 +362,9 @@ begin
             else
               inc(S);
           end;
+          MoveFast(T^, D^, P - T);
+          ReadQuoted(pointer(field), length(field), @field);
         end;
-        if P < PEnd then
-          inc(P); // skip closing quote
-        if (P < PEnd) and
-           (P^ <> delim) and
-           (P^ <> #13) and
-           (P^ <> #10) then
-        begin
-          if strict then
-            RaiseCsv('unexpected character after closing quote');
-          // lenient mode: append the trailing chars as-is, e.g. "a"b -> ab
-          S := P;
-          while (P < PEnd) and
-                (P^ <> delim) and
-                (P^ <> #13) and
-                (P^ <> #10) do
-            inc(P);
-          Append(field, S, P - S);
-        end;
-        if (field = '') and
-           (tboEmptyAsNull in fOptions) then
-        begin
-          // "" is an explicit void string, not a null (unquoted) field
-          RawUtf8ToVariant('', NewCell^);
-          inc(fCellNotEmpty);
-        end
-        else
-          ReadCellText(field, {guess=}false); // quoted = always text
       end
       else
       begin
@@ -374,13 +376,7 @@ begin
         if (P < PEnd) and
            (P^ = q) then // only if strict
           RaiseCsv('unexpected quote in unquoted field');
-        if P = S then
-          ReadCellEmpty
-        else
-        begin
-          FastSetString(field, S, P - S);
-          ReadCellText(field, {guess=}true);
-        end;
+        ReadCellBuffer(S, P - S, {guess=}true);
       end;
       // end of field: delimiter, end of record, or end of input
       if P >= PEnd then
@@ -451,26 +447,20 @@ begin
   inc(fWriteRows);
 end;
 
-procedure TCsvDocument.WriteField(const Text: RawUtf8; IsText: boolean);
+procedure TCsvDocument.WriteField(P: PUtf8Char; L: PtrInt; IsText: boolean);
 var
-  P, PEnd, S: PUtf8Char;
+  PEnd, S: PUtf8Char;
   q: AnsiChar;
-  needquote: boolean;
-  L: PtrInt;
+  needquote, formula: boolean;
 begin
-  L := length(Text);
-  P := pointer(Text);
   q := fQuote;
   if q = #0 then
     q := '"';
-  if IsText and
-     (csoEscapeFormulas in fCsvOptions) and
-     (L > 0) and
-     (P^ in ['=', '+', '-', '@', #9, #13]) then
-  begin
-    WriteField('''' + Text, true); // prefix with a single quote
-    exit;
-  end;
+  // CWE-1236: prefix = + - @ TAB CR with a single quote
+  formula := IsText and
+             (csoEscapeFormulas in fCsvOptions) and
+             (L > 0) and
+             (P^ in ['=', '+', '-', '@', #9, #13]);
   case fQuoting of
     cqAll:
       needquote := true;
@@ -484,29 +474,40 @@ begin
       // distinguish '' from null if needed for a round-trip
       needquote := IsText and
                    (tboEmptyAsNull in fOptions)
-    else if (P[0] = ' ') or
-            (P[L - 1] = ' ') then
+    else if ((P[0] = ' ') and
+             not formula) or
+            (P[L - 1] = ' ') or
+            (formula and
+             fNeedQuote['''']) then
       needquote := true // preserve leading/trailing spaces
     else
     begin
       PEnd := P + L;
+      S := P;
       repeat
-        if fNeedQuote[P^] then
+        if fNeedQuote[S^] then
         begin
           needquote := true;
           break;
         end;
-        inc(P);
-      until P = PEnd;
-      P := pointer(Text);
+        inc(S);
+      until S = PEnd;
     end;
   if not needquote then
   begin
+    if formula then
+      fW.Add('''');
     fW.AddNoJsonEscape(P, L);
     exit;
   end;
   // RFC 4180 quoted field, with "" escaping
   fW.Add(q);
+  if formula then
+  begin
+    fW.Add('''');
+    if q = '''' then
+      fW.Add(q);
+  end;
   PEnd := P + L;
   S := P;
   while P < PEnd do
@@ -532,17 +533,22 @@ begin
   begin
     if i > 0 then
       fW.Add(fUsedDelimiter);
-    WriteField(Names[i], true);
+    WriteField(pointer(Names[i]), length(Names[i]), true);
   end;
 end;
 
 procedure TCsvDocument.WriteRow(const Cells: TTabularCells; Count: integer);
 var
   i, n: PtrInt;
-  text: RawUtf8;
-  istext: boolean;
+  vd: PVarData;
+  tmp: TTempUtf8;
+  q: AnsiChar;
+  quoted: boolean;
 begin
   WriteNewRecord;
+  q := fQuote;
+  if q = #0 then
+    q := '"';
   n := Count;
   if n < fWriteColumnCount then
     n := fWriteColumnCount; // RFC: each record should have the same fields
@@ -550,11 +556,37 @@ begin
   begin
     if i > 0 then
       fW.Add(fUsedDelimiter);
-    if (i < Count) and
-       (Cells[i] <> nil) then
+    if (i >= Count) or
+       (Cells[i] = nil) then
+      continue; // missing field
+    vd := VarDataFromVariant(Cells[i]^);
+    if vd^.VType in [varEmpty, varNull] then
+      WriteField(nil, 0, false)
+    else if TabularIsNumber(vd) or
+            (vd^.VType = varBoolean) or
+            (vd^.VType = varDate) then
     begin
-      TabularValueToText(Cells[i]^, text, istext, fDecimalSeparator);
-      WriteField(text, istext);
+      // write number/boolean/date directly, with no temporary string
+      quoted := (fQuoting = cqAll) or
+                ((vd^.VType in [varSingle, varDouble, varCurrency]) and
+                 fNeedQuote[fDecimalSeparator]);
+      if quoted then
+        fW.Add(q);
+      if vd^.VType = varBoolean then
+        fW.Add(vd^.VBoolean)
+      else if vd^.VType = varDate then
+        fW.AddDateTime(vd^.VDate)
+      else
+        WriteNumber(vd, fDecimalSeparator);
+      if quoted then
+        fW.Add(q);
+    end
+    else
+    begin
+      // text (with no copy), NaN/Inf or nested TDocVariant as JSON
+      quoted := VariantToTempUtf8(PVariant(vd)^, tmp); // = IsText
+      WriteField(tmp.Text, tmp.Len, quoted);
+      TempUtf8Done(tmp);
     end;
   end;
 end;

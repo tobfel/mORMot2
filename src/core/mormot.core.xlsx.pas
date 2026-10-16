@@ -155,6 +155,8 @@ type
     // writing methods
     function SharedString(const Text: RawUtf8): integer;
     procedure WriteCellRef(Col: integer);
+    procedure CellWritten(Col, Width: integer);
+    procedure WriteCellText(Col: integer; const Text: RawUtf8; Style: integer);
     procedure WriteCell(Col: integer; const Value: variant; Style: integer);
     procedure WriteSheetBegin(const Name: RawUtf8);
     procedure WriteSheetEnd;
@@ -856,8 +858,11 @@ var
   celltype: TXlsxCellType;
   insheetdata, incell, invalue, inis, int, inrph, rowpending: boolean;
   rownum, nextrow, col, lastcol, style, idx: integer;
+  v: PUtf8Char;
+  vlen: PtrInt;
+  num: variant;
   dbl: double;
-  err: integer;
+  dt: TDateTime;
 
   procedure FlushRowGap;
   begin
@@ -888,6 +893,8 @@ begin
   lastcol := -1;
   style := 0;
   celltype := xctNumber;
+  v := nil;
+  vlen := 0;
   repeat
     x.ParseNext;
     if rowpending and
@@ -914,6 +921,8 @@ begin
                     style := 0;
                     col := lastcol + 1;
                     text := '';
+                    v := nil;
+                    vlen := 0;
                     attr := xaCell;
                   end;
                 'v':
@@ -974,9 +983,25 @@ begin
         end;
       xtText,
       xtCData:
-        if invalue or
-           int then
+        if invalue and
+           (vlen = 0) and
+           (x.Kind = xtText) and
+           (celltype in [xctNumber, xctShared, xctBoolean, xctIsoDate]) then
+        begin
+          // ASCII-only value with no XML entity: use the input buffer as-is
+          v := x.Value.Buffer;
+          vlen := x.Value.Len;
+        end
+        else if invalue or
+                int then
+        begin
+          if (vlen <> 0) and
+             (v <> pointer(text)) then
+            FastSetString(text, v, vlen); // rare value split into chunks
           x.ValueAppendToUtf8(text);
+          v := pointer(text);
+          vlen := length(text);
+        end;
       xtElementEnd:
         if insheetdata then
           case x.Name.Len of
@@ -993,13 +1018,13 @@ begin
                     inis := false;
                     ReadSetColumn(col);
                     lastcol := col;
-                    if text = '' then
+                    if vlen = 0 then
                       ReadCellEmpty
                     else
                       case celltype of
                         xctShared:
                           begin
-                            idx := GetInteger(pointer(text));
+                            idx := GetInteger(v, v + vlen);
                             if (idx >= 0) and
                                (idx < fSharedCount) then
                               ReadCellText(fShared[idx], false)
@@ -1011,24 +1036,27 @@ begin
                         xctError:
                           ReadCellText(XlsxUnescape(text), false);
                         xctBoolean:
-                          ReadCellValue((text = '1') or
-                                        IdemPropNameU(text, 'true'));
+                          ReadCellValue(((vlen = 1) and
+                                         (v^ = '1')) or
+                                        ((vlen = 4) and
+                                         IdemPChar(v, 'TRUE')));
                         xctIsoDate:
-                          ReadCellDateTime(Iso8601ToDateTime(text));
+                          begin
+                            Iso8601ToDateTimePUtf8CharVar(v, vlen, dt);
+                            ReadCellDateTime(dt);
+                          end;
                       else
                         // xctNumber: date/time from its style, or a number
                         if (style >= 0) and
                            (style < length(fDateStyle)) and
                            fDateStyle[style] then
-                        begin
-                          dbl := GetExtended(pointer(text), err);
-                          if err = 0 then
+                          if TabularTextToNumber(v, vlen, num) and
+                             VariantToDouble(num, dbl) then
                             ReadCellDateTime(XlsxSerialToDateTime(dbl, fDate1904))
                           else
-                            ReadCellText(text, false);
-                        end
-                        else if not ReadCellNumber(pointer(text), length(text), '.') then
-                          ReadCellText(text, false);
+                            ReadCellBuffer(v, vlen, false)
+                        else if not ReadCellNumber(v, vlen, '.') then
+                          ReadCellBuffer(v, vlen, false);
                       end;
                   end;
               end;
@@ -1164,6 +1192,38 @@ begin
   fW.Add(fRowNum);
 end;
 
+procedure TXlsxDocument.CellWritten(Col, Width: integer);
+begin
+  if Col > fColMax then
+    fColMax := Col;
+  if xoAutoWidth in fXlsxOptions then
+  begin
+    if Col >= length(fWidths) then
+      SetLength(fWidths, NextGrow(Col + 1));
+    if Width > fWidths[Col] then
+      fWidths[Col] := Width;
+  end;
+end;
+
+procedure TXlsxDocument.WriteCellText(Col: integer; const Text: RawUtf8;
+  Style: integer);
+begin
+  fW.AddShort('<c r="');
+  WriteCellRef(Col);
+  if Style <> STYLE_DEFAULT then
+  begin
+    fW.AddShort('" s="');
+    fW.Add(PtrInt(Style));
+  end;
+  fW.AddShort('" t="s"><v>');
+  fW.Add(PtrInt(SharedString(Text)));
+  fW.AddShort('</v></c>');
+  if xoAutoWidth in fXlsxOptions then
+    CellWritten(Col, Utf8ToUnicodeLength(pointer(Text)))
+  else
+    CellWritten(Col, 0);
+end;
+
 procedure TXlsxDocument.WriteCell(Col: integer; const Value: variant;
   Style: integer);
 var
@@ -1174,89 +1234,66 @@ var
   w: integer;
 begin
   vd := VarDataFromVariant(Value);
-  case vd^.VType of
-    varEmpty,
-    varNull:
-      exit; // no <c> element for a void cell
-    varBoolean:
-      begin
-        fW.AddShort('<c r="');
-        WriteCellRef(Col);
-        fW.AddShort('" t="b"><v>');
-        if vd^.VBoolean then // WordBool true = -1
-          fW.Add('1')
-        else
-          fW.Add('0');
-        fW.AddShort('</v></c>');
-        w := 5;
-      end;
-    varDate:
-      begin
-        dt := vd^.VDate;
-        fW.AddShort('<c r="');
-        WriteCellRef(Col);
-        fW.AddShort('" s="');
-        if Frac(dt) = 0 then
+  if TabularIsNumber(vd) then
+  begin
+    // write the number directly, with no temporary string
+    fW.AddShort('<c r="');
+    WriteCellRef(Col);
+    fW.AddShort('"><v>');
+    w := WriteNumber(vd, '.');
+    fW.AddShort('</v></c>');
+  end
+  else
+    case vd^.VType of
+      varEmpty,
+      varNull:
+        exit; // no <c> element for a void cell
+      varBoolean:
         begin
-          fW.Add(AnsiChar(ord('0') + STYLE_DATE));
-          w := 10;
-        end
-        else
-        begin
-          fW.Add(AnsiChar(ord('0') + STYLE_DATETIME));
-          w := 19;
+          fW.AddShort('<c r="');
+          WriteCellRef(Col);
+          fW.AddShort('" t="b"><v>');
+          if vd^.VBoolean then // WordBool true = -1
+            fW.Add('1')
+          else
+            fW.Add('0');
+          fW.AddShort('</v></c>');
+          w := 5;
         end;
-        fW.AddShort('"><v>');
-        fW.AddDouble(DateTimeToXlsxSerial(dt), {noexp=}true);
-        fW.AddShort('</v></c>');
-      end;
-    varSmallint, varInteger, varShortInt, varByte, varWord, varLongWord,
-    varInt64, varWord64, varSingle, varDouble, varCurrency:
-      begin
-        TabularValueToText(PVariant(vd)^, text, istext, '.');
-        if (text = '') or
-           not (text[length(text)] in ['0'..'9']) then
+      varDate:
         begin
-          // NaN or Infinity are not valid XLSX numbers: store as text
-          WriteCell(Col, RawUtf8ToVariant(text), Style);
+          dt := vd^.VDate;
+          fW.AddShort('<c r="');
+          WriteCellRef(Col);
+          fW.AddShort('" s="');
+          if Frac(dt) = 0 then
+          begin
+            fW.Add(AnsiChar(ord('0') + STYLE_DATE));
+            w := 10;
+          end
+          else
+          begin
+            fW.Add(AnsiChar(ord('0') + STYLE_DATETIME));
+            w := 19;
+          end;
+          fW.AddShort('"><v>');
+          fW.AddDouble(DateTimeToXlsxSerial(dt), {noexp=}true);
+          fW.AddShort('</v></c>');
+        end;
+      varString:
+        begin
+          WriteCellText(Col, RawUtf8(vd^.VAny), Style); // no copy
           exit;
         end;
-        fW.AddShort('<c r="');
-        WriteCellRef(Col);
-        fW.AddShort('"><v>');
-        fW.AddString(text);
-        fW.AddShort('</v></c>');
-        w := length(text);
-      end;
-  else
-    begin
-      // string or nested TDocVariant (as JSON) stored as shared string
-      VariantToUtf8(PVariant(vd)^, text, istext);
-      fW.AddShort('<c r="');
-      WriteCellRef(Col);
-      if Style <> STYLE_DEFAULT then
+    else
       begin
-        fW.AddShort('" s="');
-        fW.Add(PtrInt(Style));
+        // NaN/Infinity (no valid XLSX number) or nested TDocVariant as JSON
+        VariantToUtf8(PVariant(vd)^, text, istext);
+        WriteCellText(Col, text, Style);
+        exit;
       end;
-      fW.AddShort('" t="s"><v>');
-      fW.Add(PtrInt(SharedString(text)));
-      fW.AddShort('</v></c>');
-      if xoAutoWidth in fXlsxOptions then
-        w := Utf8ToUnicodeLength(pointer(text))
-      else
-        w := 0;
     end;
-  end;
-  if Col > fColMax then
-    fColMax := Col;
-  if xoAutoWidth in fXlsxOptions then
-  begin
-    if Col >= length(fWidths) then
-      SetLength(fWidths, NextGrow(Col + 1));
-    if w > fWidths[Col] then
-      fWidths[Col] := w;
-  end;
+  CellWritten(Col, w);
 end;
 
 procedure TXlsxDocument.WriteBegin;
@@ -1304,7 +1341,7 @@ begin
   else
     style := STYLE_DEFAULT;
   for i := 0 to Count - 1 do
-    WriteCell(i, RawUtf8ToVariant(Names[i]), style);
+    WriteCellText(i, Names[i], style);
   fW.AddShort('</row>');
   if (xoAutoWidth in fXlsxOptions) and
      (xoAutoFilter in fXlsxOptions) then

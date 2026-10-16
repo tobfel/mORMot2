@@ -104,6 +104,7 @@ type
     fHeader: TRawUtf8DynArray;
     fHeaderCount: integer;
     fHeaderPending: boolean;
+    fExtraNames: TRawUtf8DynArray;
     fCells: TVariantDynArray;
     fCellCount: integer;
     fCellNotEmpty: integer;
@@ -111,7 +112,7 @@ type
     fSourceRow: integer;
     fMaxRowsReached: boolean;
     // writing context
-    fW: TTextWriter;
+    fW: TTextDateWriter;
     fWriteCells: TTabularCells;
     fWriteColumns: TRawUtf8DynArray;
     fWriteColumnCount: integer;
@@ -132,6 +133,12 @@ type
       DecimalSeparator: AnsiChar): boolean;
     /// append a text value - type guess is done if GuessType and tboGuessTypes
     procedure ReadCellText(const Text: RawUtf8; GuessType: boolean);
+    /// append a text buffer value, with tboTrimValues and tboGuessTypes support
+    // - Source^ may be supplied to reuse an existing RawUtf8 with no copy
+    procedure ReadCellBuffer(P: PUtf8Char; Len: PtrInt; GuessType: boolean;
+      Source: PRawUtf8 = nil);
+    /// the Col# name of a column with no header, computed once
+    function ExtraName(Col: PtrInt): RawUtf8;
     /// append an empty cell to the current row
     procedure ReadCellEmpty;
     /// pad the current row with empty cells until the 0-based Col position
@@ -156,7 +163,10 @@ type
     /// main writing method - may be overriden e.g. for XLSX multi-sheets
     function DoSave(const Doc: TDocVariantData): RawByteString; virtual;
     procedure RaiseError(const Fmt: RawUtf8; const Args: array of const);
-    /// initialize fW: TTextWriter over its own RawUtf8 buffer
+    /// write a TabularIsNumber() value into fW, with no temporary string
+    // - returns the number of written chars
+    function WriteNumber(Value: PVarData; DecimalSeparator: AnsiChar): PtrInt;
+    /// initialize fW over its own RawUtf8 buffer
     procedure WriterStart;
     /// finalize fW and return the generated text
     procedure WriterText(var Text: RawUtf8);
@@ -241,10 +251,13 @@ procedure TabularUniqueNames(var Names: TRawUtf8DynArray; Count: integer);
 /// convert a variant cell value into its text representation
 // - null/empty returns '' and IsText=false
 // - varDate returns ISO-8601 text, nested TDocVariant returns JSON
-// - floats are written with DecimalSeparator
 // - IsText is set to true if the value was a string
 procedure TabularValueToText(const Value: variant; var Text: RawUtf8;
-  out IsText: boolean; DecimalSeparator: AnsiChar = '.');
+  out IsText: boolean);
+
+/// returns true if a variant is an integer, currency or float number
+// - NaN and Infinity floats are excluded, since they are no valid numbers
+function TabularIsNumber(Value: PVarData): boolean;
 
 /// returns true if a variant contains a date/time value
 function TabularIsDate(const Value: variant; out DateTime: TDateTime): boolean;
@@ -493,14 +506,12 @@ begin
 end;
 
 procedure TabularValueToText(const Value: variant; var Text: RawUtf8;
-  out IsText: boolean; DecimalSeparator: AnsiChar);
+  out IsText: boolean);
 var
   vd: PVarData;
-  i, L: PtrInt;
-  isfloat: boolean;
+  L: PtrInt;
 begin
   IsText := false;
-  isfloat := false;
   vd := VarDataFromVariant(Value);
   case vd^.VType of
     varEmpty,
@@ -514,15 +525,9 @@ begin
     varDate:
       Text := DateTimeToIso8601Text(vd^.VDate);
     varSingle:
-      begin
-        DoubleToStr(vd^.VSingle, Text);
-        isfloat := true;
-      end;
+      DoubleToStr(vd^.VSingle, Text);
     varDouble:
-      begin
-        DoubleToStr(vd^.VDouble, Text);
-        isfloat := true;
-      end;
+      DoubleToStr(vd^.VDouble, Text);
     varCurrency:
       begin
         Curr64ToStr(vd^.VInt64, Text);
@@ -535,20 +540,24 @@ begin
             dec(L);
           SetLength(Text, L);
         end;
-        isfloat := true;
       end;
   else
     VariantToUtf8(PVariant(vd)^, Text, IsText); // string, integer or JSON
   end;
-  if isfloat and
-     (DecimalSeparator <> '.') then
-  begin
-    i := PosExChar('.', Text);
-    if i > 0 then
-    begin
-      UniqueRawUtf8(Text);
-      Text[i] := DecimalSeparator;
-    end;
+end;
+
+function TabularIsNumber(Value: PVarData): boolean;
+begin
+  case Value^.VType of
+    varSmallint, varInteger, varShortInt, varByte, varWord, varLongWord,
+    varInt64, varWord64, varCurrency:
+      result := true;
+    varSingle: // exclude NaN and Infinity (exponent bits all set)
+      result := PCardinal(@Value^.VSingle)^ and $7f800000 <> $7f800000;
+    varDouble:
+      result := PInt64(@Value^.VDouble)^ and $7ff0000000000000 <> $7ff0000000000000;
+  else
+    result := false;
   end;
 end;
 
@@ -575,7 +584,46 @@ procedure TTabularDocument.WriterStart;
 begin
   FreeAndNil(fW);
   // big buffer = few TRawByteStringStream reallocs (2x faster on FPC RTL heap)
-  fW := TTextWriter.CreateOwnedStream(1 shl 20);
+  fW := TTextDateWriter.CreateOwnedStream(1 shl 20);
+end;
+
+function TTabularDocument.WriteNumber(Value: PVarData;
+  DecimalSeparator: AnsiChar): PtrInt;
+var
+  start, p: PUtf8Char;
+  i64: Int64;
+begin
+  if fW.BEnd - fW.B <= 64 then
+    fW.FlushToStream; // so that start remains valid during the Add*() below
+  start := fW.B;
+  case Value^.VType of
+    varSingle:
+      fW.AddSingle(Value^.VSingle);
+    varDouble:
+      fW.AddDouble(Value^.VDouble);
+    varCurrency:
+      fW.AddCurr64(@Value^.VInt64);
+    varWord64:
+      fW.AddQ(Value^.VInt64);
+  else
+    if VariantToInt64(PVariant(Value)^, i64) then
+      fW.Add(i64);
+  end;
+  result := fW.B - start;
+  if (result > 0) and
+     (DecimalSeparator <> '.') and
+     (Value^.VType in [varSingle, varDouble, varCurrency]) then
+  begin
+    p := start; // fW.B points to the last written char
+    repeat
+      inc(p);
+      if p^ = '.' then
+      begin
+        p^ := DecimalSeparator;
+        break;
+      end;
+    until p = fW.B;
+  end;
 end;
 
 procedure TTabularDocument.WriterText(var Text: RawUtf8);
@@ -635,6 +683,7 @@ begin
   fRows := Rows;
   fHeader := nil;
   fHeaderCount := 0;
+  fExtraNames := nil;
   fHeaderPending := tboHeader in fOptions;
   ReadClear;
   fRowCount := 0;
@@ -668,40 +717,52 @@ begin
   inc(fCellNotEmpty);
 end;
 
-procedure TTabularDocument.ReadCellText(const Text: RawUtf8; GuessType: boolean);
+procedure TTabularDocument.ReadCellBuffer(P: PUtf8Char; Len: PtrInt;
+  GuessType: boolean; Source: PRawUtf8);
 var
   v: PVariant;
-  L: PtrInt;
-  tmp: RawUtf8;
 begin
-  L := length(Text);
-  if (L > 0) and
-     (tboTrimValues in fOptions) and
-     ((Text[1] <= ' ') or
-      (Text[L] <= ' ')) then
+  if tboTrimValues in fOptions then
   begin
-    tmp := TrimU(Text);
-    ReadCellText(tmp, GuessType); // recursive call with trimmed value
-    exit;
+    while (Len > 0) and
+          (P^ <= ' ') do
+    begin
+      inc(P);
+      dec(Len);
+    end;
+    while (Len > 0) and
+          (P[Len - 1] <= ' ') do
+      dec(Len);
   end;
-  if L = 0 then
+  if Len = 0 then
   begin
     ReadCellEmpty;
     exit;
   end;
   if GuessType and
      (tboGuessTypes in fOptions) then
-    if ReadCellNumber(pointer(Text), L, fDecimalSeparator) then
+    if ReadCellNumber(P, Len, fDecimalSeparator) then
       exit
-    else if IdemPropNameU(Text, 'true') or
-            IdemPropNameU(Text, 'false') then
+    else if ((Len = 4) and
+             IdemPChar(P, 'TRUE')) or
+            ((Len = 5) and
+             IdemPChar(P, 'FALSE')) then
     begin
-      ReadCellValue(Text[1] in ['t', 'T']);
+      ReadCellValue(Len = 4);
       exit;
     end;
   v := NewCell;
   inc(fCellNotEmpty);
-  RawUtf8ToVariant(Text, v^);
+  if (Source <> nil) and
+     (Len = length(Source^)) then
+    RawUtf8ToVariant(Source^, v^) // no trim: just a refcount
+  else
+    RawUtf8ToVariant(P, Len, v^);
+end;
+
+procedure TTabularDocument.ReadCellText(const Text: RawUtf8; GuessType: boolean);
+begin
+  ReadCellBuffer(pointer(Text), length(Text), GuessType, @Text);
 end;
 
 procedure TTabularDocument.ReadCellEmpty;
@@ -740,12 +801,28 @@ begin
   TabularUniqueNames(fHeader, fHeaderCount);
 end;
 
+function TTabularDocument.ExtraName(Col: PtrInt): RawUtf8;
+var
+  n, c: PtrInt;
+begin
+  n := Col - fHeaderCount;
+  while length(fExtraNames) <= n do
+  begin
+    c := fHeaderCount + length(fExtraNames) + 1;
+    result := Make(['Col', c]);
+    if FindRawUtf8(fHeader, result) >= 0 then
+      result := Make([result, '_', c]);
+    SetLength(fExtraNames, length(fExtraNames) + 1);
+    fExtraNames[high(fExtraNames)] := result;
+  end;
+  result := fExtraNames[n];
+end;
+
 function TTabularDocument.ReadRowEnd: boolean;
 var
   i, n: PtrInt;
   row: PDocVariantData;
   v: PVariant;
-  extra: RawUtf8;
 begin
   result := not fMaxRowsReached;
   inc(fSourceRow);
@@ -782,13 +859,7 @@ begin
       if i < fHeaderCount then
         v := row^.NewItem(fHeader[i])
       else
-      begin
-        // more cells than header columns: create Col# extra names
-        extra := Make(['Col', i + 1]);
-        if FindRawUtf8(fHeader, extra) >= 0 then
-          extra := Make([extra, '_', i + 1]);
-        v := row^.NewItem(extra);
-      end;
+        v := row^.NewItem(ExtraName(i)); // more cells than header columns
       if i < fCellCount then
       begin
         // move the cell variant content into the row (no refcount)
