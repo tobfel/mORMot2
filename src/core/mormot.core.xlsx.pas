@@ -137,8 +137,11 @@ type
     fSst: TRawUtf8DynArray;
     fSstCount, fSstTotal: integer;
     fSstHash: TDynArrayHashed;
-    fSheetXml, fSheetNames, fSheetFilter: TRawUtf8DynArray;
-    fSheetCount: integer;
+    fSheetNames, fSheetFilter: TRawUtf8DynArray;
+    fSheetCount, fSheetTotal: integer;
+    fZipDest: TRawByteStringStream;
+    fZipOut: TZipWrite;
+    fEntry: TStream;
     fRowNum, fColMax: integer;
     fWidths: TIntegerDynArray;
     fHasHeader: boolean;
@@ -158,6 +161,9 @@ type
     procedure CellWritten(Col, Width: integer);
     procedure WriteCellText(Col: integer; const Text: RawUtf8; Style: integer);
     procedure WriteCell(Col: integer; const Value: variant; Style: integer);
+    procedure ZipStart(const Name: RawUtf8);
+    procedure ZipEnd;
+    procedure ZipClose;
     procedure WriteSheetBegin(const Name: RawUtf8);
     procedure WriteSheetEnd;
     procedure WriteSheet(const Name: RawUtf8; const Rows: TDocVariantData);
@@ -628,6 +634,7 @@ end;
 destructor TXlsxDocument.Destroy;
 begin
   CloseZip;
+  ZipClose;
   inherited Destroy;
 end;
 
@@ -1289,16 +1296,72 @@ begin
   CellWritten(Col, w);
 end;
 
+procedure TXlsxDocument.ZipStart(const Name: RawUtf8);
+begin
+  FreeAndNil(fW);
+  FreeAndNil(fEntry);
+  fEntry := fZipOut.AddDeflatedStream(Utf8ToString(Name));
+  fW := TTextDateWriter.Create(fEntry, 65536); // write directly into the zip
+  fW.AddShort(XLSX_HEADER);
+end;
+
+procedure TXlsxDocument.ZipEnd;
+begin
+  fW.FlushFinal;
+  FreeAndNil(fW);
+  FreeAndNil(fEntry); // finalize the compression and the zip entry header
+end;
+
+procedure TXlsxDocument.ZipClose;
+begin
+  FreeAndNil(fW);
+  FreeAndNil(fEntry);
+  FreeAndNil(fZipOut);
+  FreeAndNil(fZipDest);
+end;
+
 procedure TXlsxDocument.WriteBegin;
+var
+  i: PtrInt;
 begin
   fSst := nil;
   fSstCount := 0;
   fSstTotal := 0;
   fSstHash.Init(TypeInfo(TRawUtf8DynArray), fSst, nil, nil, nil, @fSstCount);
-  fSheetXml := nil;
   fSheetNames := nil;
   fSheetFilter := nil;
   fSheetCount := 0;
+  ZipClose; // paranoid
+  fZipDest := TRawByteStringStream.Create;
+  fZipOut := TZipWrite.Create(fZipDest);
+  // [Content_Types].xml first, as some readers expect - fSheetTotal is known
+  ZipStart('[Content_Types].xml');
+  fW.AddString('<Types xmlns="http://schemas.openxmlformats.org/package/' +
+    '2006/content-types"><Default Extension="rels" ContentType="' +
+    'application/vnd.openxmlformats-package.relationships+xml"/>' +
+    '<Default Extension="xml" ContentType="application/xml"/>' +
+    '<Override PartName="/xl/workbook.xml" ContentType="' +
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.' +
+    'main+xml"/>');
+  for i := 1 to fSheetTotal do
+  begin
+    fW.AddShort('<Override PartName="/xl/worksheets/sheet');
+    fW.Add(i);
+    fW.AddString('.xml" ContentType="application/vnd.openxmlformats-' +
+      'officedocument.spreadsheetml.worksheet+xml"/>');
+  end;
+  fW.AddString('<Override PartName="/xl/styles.xml" ContentType="' +
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.' +
+    'styles+xml"/><Override PartName="/xl/sharedStrings.xml" ' +
+    'ContentType="application/vnd.openxmlformats-officedocument.' +
+    'spreadsheetml.sharedStrings+xml"/></Types>');
+  ZipEnd;
+  // _rels/.rels
+  ZipStart('_rels/.rels');
+  fW.AddString('<Relationships xmlns="' + XLSX_PKGREL + '"><Relationship ' +
+    'Id="rId1" Type="' + XLSX_REL + '/officeDocument" ' +
+    'Target="xl/workbook.xml"/></Relationships>');
+  ZipEnd;
 end;
 
 procedure TXlsxDocument.WriteSheetBegin(const Name: RawUtf8);
@@ -1315,7 +1378,7 @@ begin
     inc(i);
   end;
   AddRawUtf8(fSheetNames, fSheetCount, n);
-  WriterStart;
+  WriterStart; // the <row> elements are written into a memory buffer
   fRowNum := 0;
   fColMax := -1;
   fWidths := nil;
@@ -1359,39 +1422,42 @@ end;
 
 procedure TXlsxDocument.WriteSheetEnd;
 var
-  w: TTextWriter;
+  rows: TTextWriter;
+  data: TRawByteStringStream;
   i, width: PtrInt;
-  last, filter: RawUtf8;
-  data: RawUtf8;
+  filter: RawUtf8;
 begin
-  WriterText(data);
-  w := TTextWriter.CreateOwnedStream(length(data) + 1024);
+  // the <dimension> and <cols> header are known only now: compress the sheet
+  // as header + rows buffer + footer, with no concatenation of the rows XML
+  rows := fW;
+  fW := nil;
   try
-    w.AddShort(XLSX_HEADER);
-    w.AddString('<worksheet xmlns="' + XLSX_MAIN + '" xmlns:r="' + XLSX_REL + '">');
+    rows.FlushFinal;
+    data := rows.Stream as TRawByteStringStream;
+    ZipStart(Make(['xl/worksheets/sheet', fSheetCount, '.xml']));
+    fW.AddString('<worksheet xmlns="' + XLSX_MAIN + '" xmlns:r="' + XLSX_REL + '">');
     if (fRowNum > 0) and
        (fColMax >= 0) then
     begin
-      last := Make([XlsxColumnName(fColMax), fRowNum]);
-      w.AddShort('<dimension ref="A1:');
-      w.AddString(last);
-      w.AddShort('"/>');
+      fW.AddShort('<dimension ref="A1:');
+      WriteCellRef(fColMax); // e.g. 'F42' with the last row number
+      fW.AddShort('"/>');
     end;
-    w.AddShort('<sheetViews><sheetView workbookViewId="0"');
+    fW.AddShort('<sheetViews><sheetView workbookViewId="0"');
     if fSheetCount = 1 then
-      w.AddShort(' tabSelected="1"');
+      fW.AddShort(' tabSelected="1"');
     if fHasHeader and
        (xoFreezeHeader in fXlsxOptions) then
-      w.AddString('><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" ' +
+      fW.AddString('><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" ' +
         'state="frozen"/><selection pane="bottomLeft" activeCell="A2" ' +
         'sqref="A2"/></sheetView></sheetViews>')
     else
-      w.AddShort('/></sheetViews>');
-    w.AddShort('<sheetFormatPr defaultRowHeight="15"/>');
+      fW.AddShort('/></sheetViews>');
+    fW.AddShort('<sheetFormatPr defaultRowHeight="15"/>');
     if (xoAutoWidth in fXlsxOptions) and
        (fColMax >= 0) then
     begin
-      w.AddShort('<cols>');
+      fW.AddShort('<cols>');
       for i := 0 to fColMax do
       begin
         if i < length(fWidths) then
@@ -1402,23 +1468,24 @@ begin
           width := 8;
         if width > fMaxColumnWidth then
           width := fMaxColumnWidth;
-        w.AddShort('<col min="');
-        w.Add(i + 1);
-        w.AddShort('" max="');
-        w.Add(i + 1);
-        w.AddShort('" width="');
-        w.Add(width);
-        w.AddShort('" customWidth="1"/>');
+        fW.AddShort('<col min="');
+        fW.Add(i + 1);
+        fW.AddShort('" max="');
+        fW.Add(i + 1);
+        fW.AddShort('" width="');
+        fW.Add(width);
+        fW.AddShort('" customWidth="1"/>');
       end;
-      w.AddShort('</cols>');
+      fW.AddShort('</cols>');
     end;
-    if data = '' then
-      w.AddShort('<sheetData/>')
+    if data.Size = 0 then
+      fW.AddShort('<sheetData/>')
     else
     begin
-      w.AddShort('<sheetData>');
-      w.AddString(data);
-      w.AddShort('</sheetData>');
+      fW.AddShort('<sheetData>');
+      fW.FlushFinal;
+      fEntry.WriteBuffer(pointer(data.DataString)^, data.Size); // no copy
+      fW.AddShort('</sheetData>');
     end;
     filter := '';
     if fHasHeader and
@@ -1426,18 +1493,17 @@ begin
        (fColMax >= 0) then
     begin
       filter := Make(['A1:', XlsxColumnName(fColMax), fRowNum]);
-      w.AddShort('<autoFilter ref="');
-      w.AddString(filter);
-      w.AddShort('"/>');
+      fW.AddShort('<autoFilter ref="');
+      fW.AddString(filter);
+      fW.AddShort('"/>');
     end;
-    w.AddString('<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" ' +
+    fW.AddString('<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" ' +
       'header="0.3" footer="0.3"/></worksheet>');
-    SetLength(fSheetXml, fSheetCount);
-    w.SetText(fSheetXml[fSheetCount - 1]);
+    ZipEnd;
     SetLength(fSheetFilter, fSheetCount);
     fSheetFilter[fSheetCount - 1] := filter;
   finally
-    w.Free;
+    rows.Free;
   end;
 end;
 
@@ -1450,177 +1516,114 @@ end;
 
 function TXlsxDocument.WriteEnd: RawByteString;
 var
-  dest: TRawByteStringStream;
-  zip: TZipWrite;
-  w: TTextWriter;
   i: PtrInt;
   xml: RawUtf8;
   hasfilter: boolean;
-
-  procedure Add(const Name: TFileName; const Content: RawUtf8);
-  begin
-    zip.AddDeflated(Name, pointer(Content), length(Content));
-  end;
-
-  function SheetPath(i: PtrInt): RawUtf8;
-  begin
-    result := Make(['worksheets/sheet', i + 1, '.xml']);
-  end;
-
 begin
-  if fSheetCount = 0 then
-  begin
-    WriteSheetBegin(fSheetName); // always at least one (void) sheet
-    WriteSheetEnd;
-  end;
-  w := TTextWriter.CreateOwnedStream(65536);
-  dest := TRawByteStringStream.Create;
   try
-    zip := TZipWrite.Create(dest);
-    try
-      // [Content_Types].xml
-      w.AddShort(XLSX_HEADER);
-      w.AddString('<Types xmlns="http://schemas.openxmlformats.org/package/' +
-        '2006/content-types"><Default Extension="rels" ContentType="' +
-        'application/vnd.openxmlformats-package.relationships+xml"/>' +
-        '<Default Extension="xml" ContentType="application/xml"/>');
-      w.AddString('<Override PartName="/xl/workbook.xml" ContentType="' +
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.' +
-        'main+xml"/>');
-      for i := 0 to fSheetCount - 1 do
-      begin
-        w.AddShort('<Override PartName="/xl/');
-        w.AddString(SheetPath(i));
-        w.AddString('" ContentType="application/vnd.openxmlformats-' +
-          'officedocument.spreadsheetml.worksheet+xml"/>');
-      end;
-      w.AddString('<Override PartName="/xl/styles.xml" ContentType="' +
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.' +
-        'styles+xml"/><Override PartName="/xl/sharedStrings.xml" ' +
-        'ContentType="application/vnd.openxmlformats-officedocument.' +
-        'spreadsheetml.sharedStrings+xml"/></Types>');
-      w.SetText(xml);
-      Add('[Content_Types].xml', xml);
-      // _rels/.rels
-      Add('_rels/.rels', XLSX_HEADER + '<Relationships xmlns="' + XLSX_PKGREL +
-        '"><Relationship Id="rId1" Type="' + XLSX_REL + '/officeDocument" ' +
-        'Target="xl/workbook.xml"/></Relationships>');
-      // xl/workbook.xml
-      w.CancelAll;
-      w.AddShort(XLSX_HEADER);
-      w.AddString('<workbook xmlns="' + XLSX_MAIN + '" xmlns:r="' + XLSX_REL +
-        '"><bookViews><workbookView/></bookViews><sheets>');
-      hasfilter := false;
-      for i := 0 to fSheetCount - 1 do
-      begin
-        w.AddShort('<sheet name="');
-        AddXmlEscape(w, pointer(fSheetNames[i]));
-        w.AddShort('" sheetId="');
-        w.Add(i + 1);
-        w.AddShort('" r:id="rId');
-        w.Add(i + 1);
-        w.AddShort('"/>');
-        if fSheetFilter[i] <> '' then
-          hasfilter := true;
-      end;
-      w.AddShort('</sheets>');
-      if hasfilter then
-      begin
-        // Excel expects a hidden _FilterDatabase name for each auto-filter
-        w.AddShort('<definedNames>');
-        for i := 0 to fSheetCount - 1 do
-          if fSheetFilter[i] <> '' then
-          begin
-            w.AddShort('<definedName name="_xlnm._FilterDatabase" localSheetId="');
-            w.Add(i);
-            w.AddShort('" hidden="1">');
-            AddXmlEscape(w, pointer(Make(['''',
-              StringReplaceAll(fSheetNames[i], '''', ''''''), '''!$',
-              StringReplaceAll(fSheetFilter[i], ':', ':$')])));
-            w.AddShort('</definedName>');
-          end;
-        w.AddShort('</definedNames>');
-      end;
-      w.AddShort('</workbook>');
-      w.SetText(xml);
-      Add('xl/workbook.xml', xml);
-      // xl/_rels/workbook.xml.rels
-      w.CancelAll;
-      w.AddShort(XLSX_HEADER);
-      w.AddString('<Relationships xmlns="' + XLSX_PKGREL + '">');
-      for i := 0 to fSheetCount - 1 do
-      begin
-        w.AddShort('<Relationship Id="rId');
-        w.Add(i + 1);
-        w.AddString('" Type="' + XLSX_REL + '/worksheet" Target="');
-        w.AddString(SheetPath(i));
-        w.AddShort('"/>');
-      end;
-      w.AddShort('<Relationship Id="rId');
-      w.Add(fSheetCount + 1);
-      w.AddString('" Type="' + XLSX_REL + '/styles" Target="styles.xml"/>' +
-        '<Relationship Id="rId');
-      w.Add(fSheetCount + 2);
-      w.AddString('" Type="' + XLSX_REL + '/sharedStrings" ' +
-        'Target="sharedStrings.xml"/></Relationships>');
-      w.SetText(xml);
-      Add('xl/_rels/workbook.xml.rels', xml);
-      // xl/styles.xml with our 4 cell formats: default, date, datetime, header
-      Add('xl/styles.xml', XLSX_HEADER + '<styleSheet xmlns="' + XLSX_MAIN + '">' +
-        '<numFmts count="2"><numFmt numFmtId="164" formatCode="yyyy\-mm\-dd"/>' +
-        '<numFmt numFmtId="165" formatCode="yyyy\-mm\-dd\ hh:mm:ss"/></numFmts>' +
-        '<fonts count="2"><font><sz val="11"/><name val="Calibri"/>' +
-        '<family val="2"/></font><font><b/><sz val="11"/><name val="Calibri"/>' +
-        '<family val="2"/></font></fonts><fills count="2"><fill><patternFill ' +
-        'patternType="none"/></fill><fill><patternFill patternType="gray125"/>' +
-        '</fill></fills><borders count="1"><border><left/><right/><top/>' +
-        '<bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf ' +
-        'numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-        '<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" ' +
-        'borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" ' +
-        'borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" ' +
-        'fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
-        '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" ' +
-        'applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle ' +
-        'name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>');
-      // xl/sharedStrings.xml
-      WriterStart;
-      fW.AddShort(XLSX_HEADER);
-      fW.AddString('<sst xmlns="' + XLSX_MAIN + '" count="');
-      fW.Add(fSstTotal);
-      fW.AddShort('" uniqueCount="');
-      fW.Add(fSstCount);
-      fW.AddDirect('"', '>');
-      for i := 0 to fSstCount - 1 do
-      begin
-        xml := XlsxEscape(fSst[i]);
-        if (xml <> '') and
-           ((xml[1] <= ' ') or
-            (xml[length(xml)] <= ' ') or
-            (PosExChar(#10, xml) > 0)) then
-          fW.AddShort('<si><t xml:space="preserve">')
-        else
-          fW.AddShort('<si><t>');
-        AddXmlEscape(fW, pointer(xml));
-        fW.AddShort('</t></si>');
-      end;
-      fW.AddShort('</sst>');
-      WriterText(xml);
-      Add('xl/sharedStrings.xml', xml);
-      // xl/worksheets/sheet#.xml
-      for i := 0 to fSheetCount - 1 do
-      begin
-        Add(Utf8ToString(Make(['xl/worksheets/sheet', i + 1, '.xml'])),
-          fSheetXml[i]);
-        fSheetXml[i] := ''; // release memory ASAP
-      end;
-    finally
-      zip.Free; // write the .zip central directory
+    // xl/workbook.xml
+    ZipStart('xl/workbook.xml');
+    fW.AddString('<workbook xmlns="' + XLSX_MAIN + '" xmlns:r="' + XLSX_REL +
+      '"><bookViews><workbookView/></bookViews><sheets>');
+    hasfilter := false;
+    for i := 0 to fSheetCount - 1 do
+    begin
+      fW.AddShort('<sheet name="');
+      AddXmlEscape(fW, pointer(fSheetNames[i]));
+      fW.AddShort('" sheetId="');
+      fW.Add(i + 1);
+      fW.AddShort('" r:id="rId');
+      fW.Add(i + 1);
+      fW.AddShort('"/>');
+      if fSheetFilter[i] <> '' then
+        hasfilter := true;
     end;
-    result := dest.DataString;
+    fW.AddShort('</sheets>');
+    if hasfilter then
+    begin
+      // Excel expects a hidden _FilterDatabase name for each auto-filter
+      fW.AddShort('<definedNames>');
+      for i := 0 to fSheetCount - 1 do
+        if fSheetFilter[i] <> '' then
+        begin
+          fW.AddShort('<definedName name="_xlnm._FilterDatabase" localSheetId="');
+          fW.Add(i);
+          fW.AddShort('" hidden="1">');
+          AddXmlEscape(fW, pointer(Make(['''',
+            StringReplaceAll(fSheetNames[i], '''', ''''''), '''!$',
+            StringReplaceAll(fSheetFilter[i], ':', ':$')])));
+          fW.AddShort('</definedName>');
+        end;
+      fW.AddShort('</definedNames>');
+    end;
+    fW.AddShort('</workbook>');
+    ZipEnd;
+    // xl/_rels/workbook.xml.rels
+    ZipStart('xl/_rels/workbook.xml.rels');
+    fW.AddString('<Relationships xmlns="' + XLSX_PKGREL + '">');
+    for i := 1 to fSheetCount do
+    begin
+      fW.AddShort('<Relationship Id="rId');
+      fW.Add(i);
+      fW.AddString('" Type="' + XLSX_REL + '/worksheet" ' +
+        'Target="worksheets/sheet');
+      fW.Add(i);
+      fW.AddShort('.xml"/>');
+    end;
+    fW.AddShort('<Relationship Id="rId');
+    fW.Add(fSheetCount + 1);
+    fW.AddString('" Type="' + XLSX_REL + '/styles" Target="styles.xml"/>' +
+      '<Relationship Id="rId');
+    fW.Add(fSheetCount + 2);
+    fW.AddString('" Type="' + XLSX_REL + '/sharedStrings" ' +
+      'Target="sharedStrings.xml"/></Relationships>');
+    ZipEnd;
+    // xl/styles.xml with our 4 cell formats: default, date, datetime, header
+    ZipStart('xl/styles.xml');
+    fW.AddString('<styleSheet xmlns="' + XLSX_MAIN + '">' +
+      '<numFmts count="2"><numFmt numFmtId="164" formatCode="yyyy\-mm\-dd"/>' +
+      '<numFmt numFmtId="165" formatCode="yyyy\-mm\-dd\ hh:mm:ss"/></numFmts>' +
+      '<fonts count="2"><font><sz val="11"/><name val="Calibri"/>' +
+      '<family val="2"/></font><font><b/><sz val="11"/><name val="Calibri"/>' +
+      '<family val="2"/></font></fonts><fills count="2"><fill><patternFill ' +
+      'patternType="none"/></fill><fill><patternFill patternType="gray125"/>' +
+      '</fill></fills><borders count="1"><border><left/><right/><top/>' +
+      '<bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf ' +
+      'numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+      '<cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" ' +
+      'borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" ' +
+      'borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" ' +
+      'fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+      '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" ' +
+      'applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle ' +
+      'name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>');
+    ZipEnd;
+    // xl/sharedStrings.xml written directly into the zip
+    ZipStart('xl/sharedStrings.xml');
+    fW.AddString('<sst xmlns="' + XLSX_MAIN + '" count="');
+    fW.Add(fSstTotal);
+    fW.AddShort('" uniqueCount="');
+    fW.Add(fSstCount);
+    fW.AddDirect('"', '>');
+    for i := 0 to fSstCount - 1 do
+    begin
+      xml := XlsxEscape(fSst[i]); // no copy if nothing to escape
+      if (xml <> '') and
+         ((xml[1] <= ' ') or
+          (xml[length(xml)] <= ' ') or
+          (PosExChar(#10, xml) > 0)) then
+        fW.AddShort('<si><t xml:space="preserve">')
+      else
+        fW.AddShort('<si><t>');
+      AddXmlEscape(fW, pointer(xml));
+      fW.AddShort('</t></si>');
+    end;
+    fW.AddShort('</sst>');
+    ZipEnd;
+    FreeAndNil(fZipOut); // write the .zip central directory
+    result := fZipDest.DataString;
   finally
-    dest.Free;
-    w.Free;
+    ZipClose;
     fSst := nil;
     fSstCount := 0;
   end;
@@ -1632,7 +1635,6 @@ var
   sheets: boolean;
   rows: PDocVariantData;
 begin
-  WriteBegin;
   // a TDocVariant object of arrays is a set of {"sheetname": [rows...]}
   sheets := Doc.IsObject and
             (Doc.Count > 0);
@@ -1645,11 +1647,21 @@ begin
         break;
       end;
   if sheets then
-    for i := 0 to Doc.Count - 1 do
-      WriteSheet(Doc.Names[i], _Safe(Doc.Values[i])^)
+    fSheetTotal := Doc.Count
   else
-    WriteSheet(fSheetName, Doc);
-  result := WriteEnd;
+    fSheetTotal := 1;
+  WriteBegin;
+  try
+    if sheets then
+      for i := 0 to Doc.Count - 1 do
+        WriteSheet(Doc.Names[i], _Safe(Doc.Values[i])^)
+    else
+      WriteSheet(fSheetName, Doc);
+    result := WriteEnd;
+  except
+    ZipClose; // release any pending memory buffer
+    raise;
+  end;
 end;
 
 
