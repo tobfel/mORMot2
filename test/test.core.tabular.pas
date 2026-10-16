@@ -70,6 +70,47 @@ begin
   result := J(_Json(json, JSON_FAST_FLOAT));
 end;
 
+// local test helpers, replacing the former one-liner API
+function CsvToJson(const Csv: RawByteString; Options: TTabularOptions = TABULAR_DEFAULT;
+  Delimiter: AnsiChar = ','): RawUtf8;
+begin
+  result := J(CsvToVariant(Csv, Options, Delimiter));
+end;
+
+function JsonToCsv(const Json: RawUtf8; Options: TTabularOptions = TABULAR_DEFAULT;
+  Delimiter: AnsiChar = ','): RawUtf8;
+begin
+  result := VariantToCsv(_JsonFast(Json), Options, Delimiter);
+end;
+
+function LoadJ(Doc: TTabularDocument; const Data: RawByteString): RawUtf8;
+var
+  v: variant;
+begin
+  Doc.Load(Data, v);
+  result := J(v);
+end;
+
+function SheetNames(Doc: TXlsxDocument; const Data: RawByteString): RawUtf8;
+var
+  s: TXlsxSheetDynArray;
+  i: PtrInt;
+begin
+  s := Doc.GetSheets(Data);
+  result := '';
+  for i := 0 to length(s) - 1 do
+    if i = 0 then
+      result := s[i].Name
+    else
+      result := Make([result, ',', s[i].Name]);
+end;
+
+function SqlQuery(Props: TSqlDBConnectionProperties; const Sql: RawUtf8;
+  const Params: array of const): variant;
+begin
+  result := Props.Execute(Sql, Params).FetchAllToDocVariantArray;
+end;
+
 function DateVariant(dt: TDateTime): variant;
 begin
   VarClear(result);
@@ -116,10 +157,15 @@ function TTestCoreTabular.ExpectError(Doc: TTabularDocument;
 var
   v: variant;
 begin
+  result := false;
   TSynLog.Family.ExceptionIgnoreCurrentThread := true;
   try
-    result := not Doc.TryLoad(Data, v) and
-              (Doc.LastError <> '');
+    try
+      Doc.Load(Data, v);
+    except
+      on E: ETabularException do
+        result := E.Message <> '';
+    end;
   finally
     TSynLog.Family.ExceptionIgnoreCurrentThread := false;
   end;
@@ -254,7 +300,7 @@ begin
       '"31.01.2024"},{"Name":"Gr\u00fc\u00dfe","Betrag":-2.25,"Datum":' +
       '"01.02.2024"}]'), 'sep=; line + cp1252 + decimal comma');
     Check(c.UsedDelimiter = ';', 'UsedDelimiter');
-    CheckEqual(c.LoadToJson('sep=;'#13#10'n'#13#10'1.234,5'), '[{"n":"1.234,5"}]',
+    CheckEqual(LoadJ(c, 'sep=;'#13#10'n'#13#10'1.234,5'), '[{"n":"1.234,5"}]',
       'thousands separator kept as text');
     c.Delimiter := #0;
     c.Load(HexToBin('fffe610009006200' + '0d000a00c4000900ac200d000a00'), v);
@@ -277,7 +323,7 @@ begin
     c.MaxRows := 0;
     // lenient vs strict
     c.Options := [];
-    CheckEqual(c.LoadToJson('a"b,"c"d,"e'), '[["a\"b","cd","e"]]', 'lenient');
+    CheckEqual(LoadJ(c, 'a"b,"c"d,"e'), '[["a\"b","cd","e"]]', 'lenient');
     c.CsvOptions := [csoStrict];
     Check(ExpectError(c, 'a"b,c'), 'strict bare quote');
     Check(ExpectError(c, '"c"d,e'), 'strict char after quote');
@@ -365,8 +411,7 @@ begin
     Check(ExpectError(x, 'not a zip file at all, just text'), 'invalid input');
     if not Fixtures then
       exit;
-    CheckEqual(RawUtf8ArrayToCsv(x.GetSheetNames(
-      StringFromFile(fFixtures + 'openpyxl.xlsx'))),
+    CheckEqual(SheetNames(x, StringFromFile(fFixtures + 'openpyxl.xlsx')),
       'Data,Zweite Tabelle,Hidden', 'sheet names');
     x.LoadFromFile(fFixtures + 'openpyxl.xlsx', v);
     CheckEqual(J(v),
@@ -389,7 +434,7 @@ begin
     x.LoadFromFile(fFixtures + 'openpyxl.xlsx', v);
     CheckEqual(J(v), '[{"a":"x","b":1.5}]', 'sheet by name');
     x.SheetName := '';
-    x.LoadSheetsFromFile(fFixtures + 'openpyxl.xlsx', v, {hidden=}false);
+    x.LoadSheets(StringFromFile(fFixtures + 'openpyxl.xlsx'), v, {hidden=}false);
     CheckEqual(RawUtf8ArrayToCsv(_Safe(v)^.GetNames), 'Data,Zweite Tabelle',
       'LoadSheets without hidden');
     x.LoadFromFile(fFixtures + 'date1904.xlsx', v);
@@ -450,9 +495,9 @@ begin
       '{"Name":" lead","Age":null,"Price":null,"Ok":null,"When":null,' +
       '"Extra":null,"Big":1234567890123456}]'), 'xlsx round-trip');
     // several sheets as a TDocVariant object, with sanitized names
-    bin := x.SaveJson('{"Sales/2024":[{"a":1}],"Sales/2024 ":[[1,2],[3]],' +
-      '"[]":[]}');
-    CheckEqual(RawUtf8ArrayToCsv(x.GetSheetNames(bin)),
+    bin := x.Save(_JsonFast('{"Sales/2024":[{"a":1}],"Sales/2024 ":[[1,2],[3]],' +
+      '"[]":[]}'));
+    CheckEqual(SheetNames(x, bin),
       'Sales_2024,Sales_2024 (2),__', 'sheet names sanitized');
     x.LoadSheets(bin, w);
     // [[1,2],[3]] with tboHeader: first row [1,2] are the column names
@@ -460,19 +505,18 @@ begin
       '"2":null}],"__":[]}', 'LoadSheets');
     x.Options := [];
     x.SheetName := 'Matrix';
-    bin := x.SaveJson('[[1,"two",3.5],[],[null,true]]');
+    bin := x.Save(_JsonFast('[[1,"two",3.5],[],[null,true]]'));
     x.SheetName := '';
     x.Load(bin, w);
     CheckEqual(J(w), '[[1,"two",3.5],[""],["",true]]', 'array rows');
     CheckEqual(XlsxColumnName(0) + XlsxColumnName(25) + XlsxColumnName(26) +
       XlsxColumnName(701) + XlsxColumnName(702), 'AZAAZZAAA', 'column names');
     CheckEqual(XlsxColumnIndex('XFD1048576', 10), 16383, 'column index');
-    CheckEqual(XlsxEscape('a'#1'b_x0041_c'), 'a_x0001_b_x005F_x0041_c', 'escape');
-    CheckEqual(XlsxEscape('plain_xyz'), 'plain_xyz', 'escape none');
-    CheckEqual(XlsxUnescape('a_x0001_b_x005F_x0041_c'), 'a'#1'b_x0041_c',
-      'unescape');
-    CheckEqualHex(XlsxUnescape('_x00E4__x20ac_'), 'c3a4e282ac', 'unescape utf-8');
-    CheckEqual(XlsxUnescape('_x12G4_'), '_x12G4_', 'unescape invalid');
+    // _xHHHH_ escaping of control chars and of existing patterns
+    bin := x.Save(_JsonFast('[["a\u0001b_x0041_c","_x12G4_","plain_xyz"]]'));
+    x.Load(bin, w);
+    CheckEqual(J(w), JE('[["a\u0001b_x0041_c","_x12G4_","plain_xyz"]]'),
+      'xlsx escape round-trip');
     Check(XlsxIsDateFormat('dd/mm/yyyy') and
           XlsxIsDateFormat('[h]:mm') and
           not XlsxIsDateFormat('0.00E+00') and
@@ -543,13 +587,13 @@ begin
       '"_1st":"5","when_":"2025-01-01","note":"' + RawUtf8OfChar('x', 300) +
       '"},{"id":3,"first_name":null,"amount":3.14159,"ok":1,"order_":"",' +
       '"_1st":"c","when_":null,"note":null}]');
-    res := SqlDBToTabular(props, 'select * from import order by id', []);
+    res := SqlQuery(props, 'select * from import order by id', []);
     CheckEqual(J(res), expected, 'select back');
     // append into the existing table, matching by original or SQL names
     CheckEqual(TabularToSqlDB(props, 'import',
       _JsonFast('[{"id":"4","amount":"7","first name":"x"}]'), []), 1,
       'existing table + text to number conversion');
-    CheckEqual(J(SqlDBToTabular(props,
+    CheckEqual(J(SqlQuery(props,
       'select id,amount,first_name from import where id=?', [4])),
       '[{"id":4,"amount":7,"first_name":"x"}]', 'converted values');
     Check(ExpectRaise(props, '[{"id":5,"zzz":1}]'), 'unknown column raises');
@@ -557,12 +601,12 @@ begin
       [tsoIgnoreUnknownColumns]), 1, 'tsoIgnoreUnknownColumns');
     Check(ExpectRaise(props, '[{"id":6},{"id":"seven"}]', 'row 2'),
       'conversion error with row number');
-    CheckEqual(J(SqlDBToTabular(props, 'select count(*) as n from import', [])),
+    CheckEqual(J(SqlQuery(props, 'select count(*) as n from import', [])),
       '[{"n":5}]', 'rollback on error');
     // tsoDeleteFirst + per-row prepared INSERT path
     CheckEqual(TabularToSqlDB(props, 'import', rows, [tsoDeleteFirst, tsoNoBatch]),
       3, 'no batch count');
-    res := SqlDBToTabular(props, 'select * from import order by id', []);
+    res := SqlQuery(props, 'select * from import order by id', []);
     CheckEqual(J(res), expected, 'no batch data');
     // CSV -> SQL -> XLSX full chain
     with TCsvDocument.CreateDelimiter(';', [tboHeader, tboGuessTypes]) do
@@ -574,7 +618,7 @@ begin
       Free;
     end;
     TabularToSqlDB(props, 'artikel', rows);
-    res := SqlDBToTabular(props, 'select * from artikel', []);
+    res := SqlQuery(props, 'select * from artikel', []);
     CheckEqual(J(res), '[{"Art_Nr":"0815","Bezeichnung":"Schraube",' +
       '"Preis":0.25},{"Art_Nr":"4711","Bezeichnung":"Mutter","Preis":1.5}]',
       'csv -> sql');

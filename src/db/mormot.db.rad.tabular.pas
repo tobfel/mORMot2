@@ -131,11 +131,6 @@ type
 function TabularAppendToDataSet(const Rows: variant; Dest: TDataSet;
   Options: TTabularDataSetOptions = []): integer;
 
-/// assign a variant cell value to a TField, with proper type conversion
-// - null/empty values clear the field
-// - returns false if the value could not be converted (e.g. 'abc' to integer)
-function TabularValueToField(const Value: variant; Field: TField): boolean;
-
 
 { ************ Export any TDataSet into TDocVariant Rows }
 
@@ -145,9 +140,6 @@ function TabularValueToField(const Value: variant; Field: TField): boolean;
 // dates as varDate (i.e. XLSX date cells), text as RawUtf8, BLOBs as Base64
 // - the current position of the dataset is restored after the process
 function DataSetToTabular(Source: TDataSet; MaxRows: integer = 0): variant;
-
-/// convert the current record of a TDataSet into a TDocVariant object value
-function FieldToTabularValue(Field: TField; var Value: variant): boolean;
 
 
 implementation

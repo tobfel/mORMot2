@@ -27,7 +27,6 @@ interface
 {$I ..\mormot.defines.inc}
 
 uses
-  classes,
   sysutils,
   mormot.core.base,
   mormot.core.os,
@@ -98,7 +97,6 @@ type
     fColumns: TRawUtf8DynArray;
     fMaxRows: integer;
     fDecimalSeparator: AnsiChar;
-    fLastError: string;
     // reading context
     fRows: PDocVariantData;
     fHeader: TRawUtf8DynArray;
@@ -119,6 +117,17 @@ type
     fWriteRowIndex: integer;
     function NewCell: PVariant;
       {$ifdef HASINLINE} inline; {$endif}
+    /// decode a text buffer into UTF-8, detecting BOM and code page
+    // - UTF-8 BOM is removed, UTF-16 LE/BE (with BOM) are converted into UTF-8
+    // - if CodePage is CP_UTF8, the content is returned as-is
+    // - if CodePage is 0, valid UTF-8 is returned as-is, and other content
+    // is converted from CP_WINANSI (1252), i.e. the most common "ANSI" input
+    // - any other CodePage will use TSynAnsiConvert.Engine(CodePage)
+    class procedure DecodeText(const Data: RawByteString; CodePage: cardinal;
+      var Text: RawUtf8);
+    /// returns true if a variant is an integer, currency or float number
+    // - NaN and Infinity floats are excluded, since they are no valid numbers
+    class function IsNumber(Value: PVarData): boolean;
     procedure SetHeaderFromCells;
     procedure ReadClear;
     // reading methods, to be called by the overriden Parse() method
@@ -178,27 +187,13 @@ type
     /// parse some tabular data into a TDocVariant array of rows
     // - raise an ETabularException (or a format-specific exception) on error
     procedure Load(const Data: RawByteString; var Doc: variant); virtual;
-    /// parse some tabular data into a TDocVariant array of rows, with no exception
-    // - returns false on error, with the error message in LastError
-    function TryLoad(const Data: RawByteString; var Doc: variant): boolean;
     /// parse a tabular file into a TDocVariant array of rows
     procedure LoadFromFile(const FileName: TFileName; var Doc: variant);
-    /// parse a tabular stream into a TDocVariant array of rows
-    procedure LoadFromStream(Stream: TStream; var Doc: variant);
-    /// parse some tabular data into a JSON array of rows
-    function LoadToJson(const Data: RawByteString;
-      Format: TTextWriterJsonFormat = jsonCompact): RawUtf8;
     /// serialize a TDocVariant array of rows into the tabular format
     // - raise an ETabularException if Doc is not a TDocVariant
     function Save(const Doc: variant): RawByteString;
     /// serialize a TDocVariantData array of rows into the tabular format
     function SaveDoc(const Doc: TDocVariantData): RawByteString;
-    /// serialize a JSON array of rows into the tabular format
-    function SaveJson(const Json: RawUtf8): RawByteString;
-    /// serialize a TDocVariant array of rows into a file
-    procedure SaveToFile(const Doc: variant; const FileName: TFileName);
-    /// serialize a TDocVariant array of rows into a stream
-    procedure SaveToStream(const Doc: variant; Stream: TStream);
     /// customize the reading and writing process
     property Options: TTabularOptions
       read fOptions write fOptions;
@@ -220,9 +215,6 @@ type
     // - default is '.' - set e.g. ',' for German Excel CSV exports
     property DecimalSeparator: AnsiChar
       read fDecimalSeparator write fDecimalSeparator;
-    /// the error message of the last failed TryLoad() call
-    property LastError: string
-      read fLastError;
     /// the column names, as retrieved by the last Load() with tboHeader
     property Header: TRawUtf8DynArray
       read fHeader;
@@ -234,30 +226,12 @@ type
 
 { ************ Shared Low-Level Helper Functions }
 
-/// decode a text buffer into UTF-8, detecting BOM and code page
-// - UTF-8 BOM is removed, UTF-16 LE/BE (with BOM) are converted into UTF-8
-// - if CodePage is CP_UTF8, the content is returned as-is
-// - if CodePage is 0, valid UTF-8 is returned as-is, and other content
-// is converted from CP_WINANSI (1252), i.e. the most common "ANSI" input
-// - any other CodePage will use TSynAnsiConvert.Engine(CodePage)
-procedure TabularDecodeText(const Data: RawByteString; CodePage: cardinal;
-  var Text: RawUtf8);
-
-/// ensure some column names are not void and unique
-// - void names are replaced with 'Col#' (1-based), and duplicated names
-// are suffixed with '_2', '_3'...
-procedure TabularUniqueNames(var Names: TRawUtf8DynArray; Count: integer);
-
 /// convert a variant cell value into its text representation
 // - null/empty returns '' and IsText=false
 // - varDate returns ISO-8601 text, nested TDocVariant returns JSON
 // - IsText is set to true if the value was a string
 procedure TabularValueToText(const Value: variant; var Text: RawUtf8;
   out IsText: boolean);
-
-/// returns true if a variant is an integer, currency or float number
-// - NaN and Infinity floats are excluded, since they are no valid numbers
-function TabularIsNumber(Value: PVarData): boolean;
 
 /// returns true if a variant contains a date/time value
 function TabularIsDate(const Value: variant; out DateTime: TDateTime): boolean;
@@ -297,40 +271,6 @@ implementation
 
 
 { ************ Shared Low-Level Helper Functions }
-
-procedure TabularDecodeText(const Data: RawByteString; CodePage: cardinal;
-  var Text: RawUtf8);
-var
-  P: pointer;
-  L: PtrInt;
-  tmp: RawByteString;
-begin
-  P := pointer(Data);
-  L := length(Data);
-  case BomFile(P, L) of
-    bomUtf8:
-      FastSetString(Text, P, L);
-    bomUtf16LE:
-      RawUnicodeToUtf8(P, L shr 1, Text);
-    bomUtf16BE:
-      begin
-        FastSetRawByteString(tmp, P, L); // don't modify the const input
-        bswap16array(pointer(tmp), L shr 1);
-        RawUnicodeToUtf8(pointer(tmp), L shr 1, Text);
-      end;
-  else
-    if (CodePage = CP_UTF8) or
-       ((CodePage = 0) and
-        IsValidUtf8(Data)) then
-      Text := Data // no conversion needed (just a refcount)
-    else
-    begin
-      if CodePage = 0 then
-        CodePage := CP_WINANSI;
-      TSynAnsiConvert.Engine(CodePage).AnsiToUtf8(Data, Text);
-    end;
-  end;
-end;
 
 procedure TabularUniqueNames(var Names: TRawUtf8DynArray; Count: integer);
 var
@@ -546,22 +486,6 @@ begin
   end;
 end;
 
-function TabularIsNumber(Value: PVarData): boolean;
-begin
-  case Value^.VType of
-    varSmallint, varInteger, varShortInt, varByte, varWord, varLongWord,
-    varInt64, varWord64, varCurrency:
-      result := true;
-    varSingle: // exclude NaN and Infinity (exponent bits all set)
-      result := PCardinal(@Value^.VSingle)^ and $7f800000 <> $7f800000;
-    varDouble:
-      result := PInt64(@Value^.VDouble)^ and $7ff0000000000000 <> $7ff0000000000000;
-  else
-    result := false;
-  end;
-end;
-
-
 { ************ TTabularDocument Abstract Parent Class }
 
 { TTabularDocument }
@@ -578,6 +502,55 @@ destructor TTabularDocument.Destroy;
 begin
   FreeAndNil(fW);
   inherited Destroy;
+end;
+
+class procedure TTabularDocument.DecodeText(const Data: RawByteString;
+  CodePage: cardinal; var Text: RawUtf8);
+var
+  P: pointer;
+  L: PtrInt;
+  tmp: RawByteString;
+begin
+  P := pointer(Data);
+  L := length(Data);
+  case BomFile(P, L) of
+    bomUtf8:
+      FastSetString(Text, P, L);
+    bomUtf16LE:
+      RawUnicodeToUtf8(P, L shr 1, Text);
+    bomUtf16BE:
+      begin
+        FastSetRawByteString(tmp, P, L); // don't modify the const input
+        bswap16array(pointer(tmp), L shr 1);
+        RawUnicodeToUtf8(pointer(tmp), L shr 1, Text);
+      end;
+  else
+    if (CodePage = CP_UTF8) or
+       ((CodePage = 0) and
+        IsValidUtf8(Data)) then
+      Text := Data // no conversion needed (just a refcount)
+    else
+    begin
+      if CodePage = 0 then
+        CodePage := CP_WINANSI;
+      TSynAnsiConvert.Engine(CodePage).AnsiToUtf8(Data, Text);
+    end;
+  end;
+end;
+
+class function TTabularDocument.IsNumber(Value: PVarData): boolean;
+begin
+  case Value^.VType of
+    varSmallint, varInteger, varShortInt, varByte, varWord, varLongWord,
+    varInt64, varWord64, varCurrency:
+      result := true;
+    varSingle: // exclude NaN and Infinity (exponent bits all set)
+      result := PCardinal(@Value^.VSingle)^ and $7f800000 <> $7f800000;
+    varDouble:
+      result := PInt64(@Value^.VDouble)^ and $7ff0000000000000 <> $7ff0000000000000;
+  else
+    result := false;
+  end;
 end;
 
 procedure TTabularDocument.WriterStart;
@@ -917,40 +890,9 @@ begin
   end;
 end;
 
-function TTabularDocument.TryLoad(const Data: RawByteString;
-  var Doc: variant): boolean;
-begin
-  fLastError := '';
-  try
-    Load(Data, Doc);
-    result := true;
-  except
-    on E: Exception do
-    begin
-      fLastError := E.Message;
-      VarClear(Doc);
-      result := false;
-    end;
-  end;
-end;
-
 procedure TTabularDocument.LoadFromFile(const FileName: TFileName; var Doc: variant);
 begin
   Load(StringFromFile(FileName), Doc);
-end;
-
-procedure TTabularDocument.LoadFromStream(Stream: TStream; var Doc: variant);
-begin
-  Load(StreamToRawByteString(Stream), Doc);
-end;
-
-function TTabularDocument.LoadToJson(const Data: RawByteString;
-  Format: TTextWriterJsonFormat): RawUtf8;
-var
-  doc: variant;
-begin
-  Load(Data, doc);
-  result := TDocVariantData(doc).ToJson('', '', Format);
 end;
 
 procedure TTabularDocument.ComputeColumns(const Rows: TDocVariantData);
@@ -1063,30 +1005,5 @@ begin
     RaiseError('Save() expects a TDocVariant document', []);
   result := SaveDoc(dv^);
 end;
-
-function TTabularDocument.SaveJson(const Json: RawUtf8): RawByteString;
-var
-  doc: TDocVariantData;
-begin
-  if not doc.InitJson(Json, fDocOptions) then
-    RaiseError('SaveJson() expects a valid JSON array', []);
-  result := SaveDoc(doc);
-end;
-
-procedure TTabularDocument.SaveToFile(const Doc: variant; const FileName: TFileName);
-begin
-  if not FileFromString(Save(Doc), FileName) then
-    RaiseError('SaveToFile(%) failed', [FileName]);
-end;
-
-procedure TTabularDocument.SaveToStream(const Doc: variant; Stream: TStream);
-var
-  tmp: RawByteString;
-begin
-  tmp := Save(Doc);
-  if tmp <> '' then
-    Stream.WriteBuffer(pointer(tmp)^, length(tmp));
-end;
-
 
 end.

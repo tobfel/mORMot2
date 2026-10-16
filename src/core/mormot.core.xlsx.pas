@@ -85,16 +85,6 @@ type
   /// information about the sheets of a XLSX workbook
   TXlsxSheetDynArray = array of TXlsxSheet;
 
-  /// the cell types as stored in a XLSX sheet 't' attribute
-  TXlsxCellType = (
-    xctNumber,
-    xctShared,
-    xctInline,
-    xctFormulaString,
-    xctBoolean,
-    xctError,
-    xctIsoDate);
-
 const
   /// default TXlsxDocument writing options
   XLSX_DEFAULT = [xoHeaderBold, xoFreezeHeader, xoAutoWidth];
@@ -179,15 +169,10 @@ type
     destructor Destroy; override;
     /// retrieve the sheets information of a XLSX content
     function GetSheets(const Data: RawByteString): TXlsxSheetDynArray;
-    /// retrieve the sheet names of a XLSX content
-    function GetSheetNames(const Data: RawByteString): TRawUtf8DynArray;
     /// parse all sheets of a XLSX content as a TDocVariant object
     // - returns {"sheet1name": [rows...], "sheet2name": [rows...], ...}
     // - IncludeHidden=false would ignore hidden sheets
     procedure LoadSheets(const Data: RawByteString; var Doc: variant;
-      IncludeHidden: boolean = true);
-    /// parse all sheets of a XLSX file as a TDocVariant object
-    procedure LoadSheetsFromFile(const FileName: TFileName; var Doc: variant;
       IncludeHidden: boolean = true);
     /// the sheet name to be read by Load(), or written by Save() of an array
     // - if not set, Load() will use SheetIndex, and Save() will use 'Sheet1'
@@ -222,27 +207,10 @@ function XlsxColumnIndex(Ref: PUtf8Char; RefLen: PtrInt): integer;
 // - handles the 1900 leap year bug, and the 1904 date system
 function XlsxSerialToDateTime(Serial: double; Date1904: boolean = false): TDateTime;
 
-/// convert a TDateTime into a XLSX serial date number (1900 date system)
-function DateTimeToXlsxSerial(Value: TDateTime): double;
-
 /// returns true if a XLSX number format code is a date/time format
 // - e.g. 'yyyy-mm-dd', 'dd/mm/yy hh:mm' or '[h]:mm:ss' but not '0.00' nor
 // '"Total "0' (quoted text and [..] sections are ignored)
 function XlsxIsDateFormat(const Code: RawUtf8): boolean;
-
-/// returns true if a XLSX built-in number format ID is a date/time format
-function XlsxIsBuiltinDateFormat(NumFmtId: integer): boolean;
-
-/// decode the XLSX _xHHHH_ escaped characters of some text
-function XlsxUnescape(const Text: RawUtf8): RawUtf8;
-
-/// encode some text with XLSX _xHHHH_ escapes for invalid XML characters
-// - control chars (excluding TAB/CR/LF) are encoded, and any existing
-// _xHHHH_ pattern is protected as _x005F_xHHHH_
-function XlsxEscape(const Text: RawUtf8): RawUtf8;
-
-/// make a valid XLSX sheet name: no []:*?/\ chars, not void, max 31 chars
-function XlsxSheetName(const Name: RawUtf8; Index: integer): RawUtf8;
 
 
 { ************ High-Level XLSX Wrapper Functions }
@@ -252,22 +220,8 @@ function XlsxSheetName(const Name: RawUtf8; Index: integer): RawUtf8;
 function XlsxToVariant(const Xlsx: RawByteString;
   Options: TTabularOptions = TABULAR_DEFAULT; const SheetName: RawUtf8 = ''): variant;
 
-/// parse all sheets of a XLSX content as {"sheetname": [rows...], ...}
-function XlsxSheetsToVariant(const Xlsx: RawByteString;
-  Options: TTabularOptions = TABULAR_DEFAULT): variant;
-
-/// parse a XLSX content sheet into a JSON array of rows
-function XlsxToJson(const Xlsx: RawByteString;
-  Options: TTabularOptions = TABULAR_DEFAULT; const SheetName: RawUtf8 = '';
-  Format: TTextWriterJsonFormat = jsonCompact): RawUtf8;
-
 /// serialize a TDocVariant array of rows (or object of sheets) as XLSX
 function VariantToXlsx(const Doc: variant;
-  Options: TTabularOptions = TABULAR_DEFAULT;
-  XlsxOptions: TXlsxOptions = XLSX_DEFAULT): RawByteString;
-
-/// serialize a JSON array of rows (or object of sheets) as XLSX
-function JsonToXlsx(const Json: RawUtf8;
   Options: TTabularOptions = TABULAR_DEFAULT;
   XlsxOptions: TXlsxOptions = XLSX_DEFAULT): RawByteString;
 
@@ -551,6 +505,16 @@ type
     xaRow,
     xaCell);
 
+  // the cell types as stored in a XLSX sheet 't' attribute
+  TXlsxCellType = (
+    xctNumber,
+    xctShared,
+    xctInline,
+    xctFormulaString,
+    xctBoolean,
+    xctError,
+    xctIsoDate);
+
 function NameIs(const x: TXmlParser; const Value: RawUtf8): boolean;
   {$ifdef HASINLINE} inline; {$endif}
 begin
@@ -682,7 +646,7 @@ begin
       raise EXlsxException.CreateUtf8('%: invalid % part', [self, Path])
     else
       exit;
-  TabularDecodeText(tmp, CP_UTF8, result); // remove any UTF-8 BOM
+  DecodeText(tmp, CP_UTF8, result); // remove any UTF-8 BOM
 end;
 
 procedure TXlsxDocument.ReadWorkbook;
@@ -1125,17 +1089,6 @@ begin
   end;
 end;
 
-function TXlsxDocument.GetSheetNames(const Data: RawByteString): TRawUtf8DynArray;
-var
-  s: TXlsxSheetDynArray;
-  i: PtrInt;
-begin
-  s := GetSheets(Data);
-  SetLength(result, length(s));
-  for i := 0 to length(s) - 1 do
-    result[i] := s[i].Name;
-end;
-
 procedure TXlsxDocument.LoadSheets(const Data: RawByteString; var Doc: variant;
   IncludeHidden: boolean);
 var
@@ -1164,12 +1117,6 @@ begin
     fRows := nil;
     CloseZip;
   end;
-end;
-
-procedure TXlsxDocument.LoadSheetsFromFile(const FileName: TFileName;
-  var Doc: variant; IncludeHidden: boolean);
-begin
-  LoadSheets(StringFromFile(FileName), Doc, IncludeHidden);
 end;
 
 function TXlsxDocument.SharedString(const Text: RawUtf8): integer;
@@ -1234,7 +1181,7 @@ var
   w: integer;
 begin
   vd := VarDataFromVariant(Value);
-  if TabularIsNumber(vd) then
+  if IsNumber(vd) then
   begin
     // write the number directly, with no temporary string
     fW.AddShort('<c r="');
@@ -1681,33 +1628,6 @@ begin
   end;
 end;
 
-function XlsxSheetsToVariant(const Xlsx: RawByteString;
-  Options: TTabularOptions): variant;
-var
-  x: TXlsxDocument;
-begin
-  x := TXlsxDocument.Create(Options);
-  try
-    x.LoadSheets(Xlsx, result);
-  finally
-    x.Free;
-  end;
-end;
-
-function XlsxToJson(const Xlsx: RawByteString; Options: TTabularOptions;
-  const SheetName: RawUtf8; Format: TTextWriterJsonFormat): RawUtf8;
-var
-  x: TXlsxDocument;
-begin
-  x := TXlsxDocument.Create(Options);
-  try
-    x.SheetName := SheetName;
-    result := x.LoadToJson(Xlsx, Format);
-  finally
-    x.Free;
-  end;
-end;
-
 function VariantToXlsx(const Doc: variant; Options: TTabularOptions;
   XlsxOptions: TXlsxOptions): RawByteString;
 var
@@ -1721,20 +1641,5 @@ begin
     x.Free;
   end;
 end;
-
-function JsonToXlsx(const Json: RawUtf8; Options: TTabularOptions;
-  XlsxOptions: TXlsxOptions): RawByteString;
-var
-  x: TXlsxDocument;
-begin
-  x := TXlsxDocument.Create(Options);
-  try
-    x.XlsxOptions := XlsxOptions;
-    result := x.SaveJson(Json);
-  finally
-    x.Free;
-  end;
-end;
-
 
 end.

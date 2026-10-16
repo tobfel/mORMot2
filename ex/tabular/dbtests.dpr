@@ -81,6 +81,12 @@ begin
   result := J(_Json(Json, JSON_FAST_FLOAT));
 end;
 
+function SqlQuery(Props: TSqlDBConnectionProperties; const Sql: RawUtf8;
+  const Params: array of const): variant;
+begin
+  result := Props.Execute(Sql, Params).FetchAllToDocVariantArray;
+end;
+
 function DateVariant(dt: TDateTime): variant;
 begin
   VarClear(result);
@@ -145,7 +151,7 @@ begin
     rows := SampleRows;
     n := TabularToSqlDB(props, 'tab_import', rows);
     Check(n = 3, 'pg insert count');
-    res := SqlDBToTabular(props, 'select * from tab_import order by id', []);
+    res := SqlQuery(props, 'select * from tab_import order by id', []);
     CheckEqual(J(res), JN('[' +
       '{"id":1,"first_name":"M\u00fcller","amount":1,"ok":1,"order_":null,' +
       '"_1st":"a","when_":"2024-02-29T13:45:30","note":"short"},' +
@@ -156,7 +162,7 @@ begin
       '"_1st":"c","when_":null,"note":null}]'), 'pg select back');
     n := TabularToSqlDB(props, 'tab_import', rows, [tsoDeleteFirst, tsoNoBatch]);
     Check(n = 3, 'pg no batch');
-    CheckEqual(J(SqlDBToTabular(props, 'select count(*) as n from tab_import', [])),
+    CheckEqual(J(SqlQuery(props, 'select count(*) as n from tab_import', [])),
       '[{"n":3}]', 'pg delete first');
     big.InitFast(100000, dvArray);
     for i := 1 to 100000 do
@@ -170,7 +176,7 @@ begin
     n := TabularToSqlDB(props, 'tab_big', big, [tsoDeleteFirst, tsoNoBatch]);
     writeln('  per-row insert 100k rows: ', GetTickCount64 - t, ' ms');
     Check(n = 100000, 'pg big no batch');
-    CheckEqual(J(SqlDBToTabular(props,
+    CheckEqual(J(SqlQuery(props,
       'select id,name,flag from tab_big where id=?', [99999])),
       '[{"id":99999,"name":"name 99999","flag":1}]', 'pg big content');
   finally
@@ -199,7 +205,7 @@ begin
       'note TEXT COLLATE SYSTEMNOCASE)', 'SqlCreate with reserved words');
     n := TabularToSqlDB(props, 'import', rows);
     Check(n = 3, 'insert count');
-    res := SqlDBToTabular(props, 'select * from import order by id', []);
+    res := SqlQuery(props, 'select * from import order by id', []);
     CheckEqual(J(res), JN('[' +
       '{"id":1,"first_name":"M\u00fcller","amount":1,"ok":1,"order_":null,' +
       '"_1st":"a","when_":"2024-02-29T13:45:30","note":"short"},' +
@@ -212,7 +218,7 @@ begin
     n := TabularToSqlDB(props, 'import',
       _JsonFast('[{"id":"4","amount":"7","first name":"x"}]'), []);
     Check(n = 1, 'existing table + text to number conversion');
-    CheckEqual(J(SqlDBToTabular(props,
+    CheckEqual(J(SqlQuery(props,
       'select id,amount,first_name from import where id=?', [4])),
       '[{"id":4,"amount":7,"first_name":"x"}]', 'converted values');
     // unknown column
@@ -237,12 +243,12 @@ begin
         ok := PosEx('row 2', E.Message) > 0;
     end;
     Check(ok, 'conversion error with row number');
-    CheckEqual(J(SqlDBToTabular(props, 'select count(*) as n from import', [])),
+    CheckEqual(J(SqlQuery(props, 'select count(*) as n from import', [])),
       '[{"n":5}]', 'rollback on error');
     // tsoDeleteFirst + per-row prepared INSERT path
     n := TabularToSqlDB(props, 'import', rows, [tsoDeleteFirst, tsoNoBatch]);
     Check(n = 3, 'no batch count');
-    CheckEqual(J(SqlDBToTabular(props,
+    CheckEqual(J(SqlQuery(props,
       'select id,ok,when_ from import order by id', [])),
       '[{"id":1,"ok":1,"when_":"2024-02-29T13:45:30"},{"id":2,"ok":0,' +
       '"when_":"2025-01-01"},{"id":3,"ok":1,"when_":null}]', 'no batch data');
@@ -259,7 +265,7 @@ begin
       Free;
     end;
     TabularToSqlDB(props, 'artikel', rows);
-    res := SqlDBToTabular(props, 'select * from artikel', []);
+    res := SqlQuery(props, 'select * from artikel', []);
     CheckEqual(J(res), '[{"Art_Nr":"0815","Bezeichnung":"Schraube",' +
       '"Preis":0.25},{"Art_Nr":"4711","Bezeichnung":"Mutter","Preis":1.5}]',
       'csv -> sql');
@@ -278,7 +284,7 @@ begin
     writeln('  per-row insert 100k rows: ', GetTickCount64 - t, ' ms');
     Check(n = 100000, 'big no batch');
     t := GetTickCount64;
-    res := SqlDBToTabular(props, 'select * from big', []);
+    res := SqlQuery(props, 'select * from big', []);
     writeln('  select 100k rows: ', GetTickCount64 - t, ' ms');
     Check(_Safe(res)^.Count = 100000, 'big select');
   finally

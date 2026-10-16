@@ -9,14 +9,13 @@ unit mormot.db.tabular;
    Bridge between TTabularDocument rows (CSV/XLSX) and mormot.db.sql
     - Column Layout Inference from TDocVariant Rows
     - Import Rows into a TSqlDBConnectionProperties Table
-    - Export a SQL Query into TDocVariant Rows
 
    Typical use:
    ! rows := CsvToVariant(StringFromFile('kunden.csv'), [tboHeader, tboGuessTypes], ';');
    ! TabularToSqlDB(Props, 'kunden', rows, [tsoCreateTable]);
    ! ...
-   ! FileFromString(VariantToXlsx(SqlDBToTabular(Props, 'select * from kunden', [])),
-   !   'kunden.xlsx');
+   ! rows := Props.Execute('select * from kunden', []).FetchAllToDocVariantArray;
+   ! FileFromString(VariantToXlsx(rows), 'kunden.xlsx');
 
    Bulk insertion follows the mORMot ORM BatchSend() logic:
     - multi-VALUES INSERT via Props.OnBatchInsert (SQLite3, MySQL, MSSQL...)
@@ -96,13 +95,6 @@ function TabularSqlName(const Name: RawUtf8): RawUtf8;
 function TabularCell(const Row: TDocVariantData; Column: PTabularColumn;
   ColIndex: integer): PVariant;
 
-/// convert a cell value into the SQL text expected by TSqlDBStatement.Bind()
-// - i.e. number, 'quoted string', 'YYYY-MM-DDThh:mm:ss' or null
-// - returns false if the value can't be converted to the expected FieldType,
-// e.g. 'abc' text into a ftInt64 column
-function TabularValueToSql(const Value: variant; FieldType: TSqlDBFieldType;
-  var Sql: RawUtf8): boolean;
-
 
 { ************ Import Rows into a TSqlDBConnectionProperties Table }
 
@@ -158,15 +150,6 @@ function TabularToSqlDB(Props: TSqlDBConnectionProperties;
 function TabularSqlCreate(Props: TSqlDBConnectionProperties;
   const TableName: RawUtf8; const Rows: TDocVariantData;
   TextAsClob: boolean = false): RawUtf8;
-
-
-{ ************ Export a SQL Query into TDocVariant Rows }
-
-/// execute a SQL query and return its rows as a TDocVariant array of objects
-// - ready to be serialized by TCsvDocument/TXlsxDocument.Save()
-// - date/time columns are returned as varDate, so are written as XLSX dates
-function SqlDBToTabular(Props: TSqlDBConnectionProperties; const Sql: RawUtf8;
-  const Params: array of const; MaxRows: cardinal = 0): variant;
 
 
 implementation
@@ -751,18 +734,6 @@ begin
       conn.Rollback;
     raise;
   end;
-end;
-
-
-{ ************ Export a SQL Query into TDocVariant Rows }
-
-function SqlDBToTabular(Props: TSqlDBConnectionProperties; const Sql: RawUtf8;
-  const Params: array of const; MaxRows: cardinal): variant;
-var
-  rows: ISqlDBRows;
-begin
-  rows := Props.Execute(Sql, Params);
-  result := rows.FetchAllToDocVariantArray(MaxRows);
 end;
 
 

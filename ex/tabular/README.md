@@ -68,14 +68,14 @@ begin
     // write it back for German Excel
     csv.Delimiter := ';';
     csv.CsvOptions := [csoWriteBom, csoEscapeFormulas];
-    csv.SaveToFile(doc, 'import.csv');
+    FileFromString(csv.Save(doc), 'import.csv');
   finally
     csv.Free;
   end;
 end;
 ```
 
-One-liners: `CsvToVariant`, `CsvToJson`, `VariantToCsv`, `JsonToCsv`.
+One-liners: `CsvToVariant`, `VariantToCsv` (use `_Safe(doc)^.ToJson` / `_JsonFast()` for JSON).
 
 ### CSV specifics
 
@@ -101,19 +101,19 @@ begin
   try
     x.SheetName := 'Data';                   // otherwise SheetIndex (default 0)
     x.LoadFromFile('input.xlsx', doc);       // numbers, booleans, dates typed
-    x.LoadSheetsFromFile('input.xlsx', all); // {"Sheet1":[...],"Sheet2":[...]}
+    x.LoadSheets(StringFromFile('input.xlsx'), all); // {"Sheet1":[...],...}
 
     x.XlsxOptions := [xoHeaderBold, xoFreezeHeader, xoAutoFilter, xoAutoWidth];
     x.SheetName := 'Export';
-    x.SaveToFile(doc, 'output.xlsx');        // one sheet
-    x.SaveToFile(all, 'all.xlsx');           // several sheets
+    FileFromString(x.Save(doc), 'output.xlsx'); // one sheet
+    FileFromString(x.Save(all), 'all.xlsx');    // several sheets
   finally
     x.Free;
   end;
 end;
 ```
 
-One-liners: `XlsxToVariant`, `XlsxSheetsToVariant`, `XlsxToJson`, `VariantToXlsx`, `JsonToXlsx`.
+One-liners: `XlsxToVariant`, `VariantToXlsx`.
 
 ### Reading XLSX
 
@@ -122,7 +122,7 @@ One-liners: `XlsxToVariant`, `XlsxSheetsToVariant`, `XlsxToJson`, `VariantToXlsx
 - Date detection via built-in (14-22, 45-47 ...) and custom number formats; the Excel 1900 leap year bug and the 1904 date system are handled
 - Formulas: the cached value is read, formulas are not evaluated
 - Gaps in rows/columns are filled; namespace prefixes (`x:`) and non-default paths from the relationships are resolved
-- `GetSheetNames`, `GetSheets` (including the hidden flag)
+- `GetSheets` (names, part paths and the hidden flag)
 - Protection: the unpacked size per part is limited to 256 MB (mORMot `UnZip`), and the XML parser handles no DTD/entities
 
 ### Writing XLSX
@@ -154,8 +154,9 @@ begin
     // create the table (if missing) and insert all rows in one transaction
     n := TabularToSqlDB(props, 'articles', rows, [tsoCreateTable, tsoDeleteFirst]);
     // way back: any query -> XLSX (date columns become real Excel dates)
-    FileFromString(VariantToXlsx(SqlDBToTabular(props,
-      'select * from articles where price > ?', [10])), 'expensive.xlsx');
+    FileFromString(VariantToXlsx(props.Execute(
+      'select * from articles where price > ?', [10]).FetchAllToDocVariantArray),
+      'expensive.xlsx');
   finally
     csv.Free;
     props.Free;
@@ -166,7 +167,6 @@ end;
 | Function | Purpose |
 |---|---|
 | `TabularToSqlDB(Props, Table, Rows, Options, BatchRows)` | insert rows, returns the count. Optionally creates the table and empties it first; always inside one transaction (rollback on error) |
-| `SqlDBToTabular(Props, Sql, Params, MaxRows)` | SELECT -> TDocVariant rows (ready for CSV/XLSX) |
 | `TabularSqlCreate(Props, Table, Rows)` | only the matching `CREATE TABLE`, in the SQL dialect of the connection (via `Props.SqlCreate`) |
 | `TabularColumns(Rows)` | column layout from **all** rows: type, max length, null values, valid SQL name |
 
@@ -201,7 +201,6 @@ FileFromString(VariantToXlsx(DataSetToTabular(Query1)), 'export.xlsx');
 | `TabularFieldDefs(Rows, Defs, StringAsAnsi)` | fill `FieldDefs` matching the rows (before `CreateDataSet`) |
 | `TabularAppendToDataSet(Rows, Dest, Options)` | Append/Post per row, fields matched by name, values converted to the respective `TField.DataType`; on error `Cancel` + `ETabularDataSet` with row and field |
 | `DataSetToTabular(Source, MaxRows)` | all records -> rows (Int64, Double, Currency for BCD, Boolean, `varDate`, UTF-8 text, BLOB as Base64 with magic, like `DataSetToJson`); the position is restored |
-| `TabularValueToField` / `FieldToTabularValue` | single value conversion |
 
 `TTabularDataSetOptions`: `tdoIgnoreUnknownFields`, `tdoEmptyFirst`, `tdoKeepControls`.
 
@@ -255,5 +254,5 @@ Typical timings (100,000 rows, 4-5 columns, in-memory):
 - Not included: cell formatting beyond the bold header row and date formats, merged cells (only the top-left cell holds the value), streaming for files larger than RAM.
 - An instance is not thread-safe, but can be reused for several Load/Save calls.
 - `TDocVariantArrayDataSet.GetRowFieldData` (mORMot, `mormot.db.rad.ui.pas`) reads `dv^.Names[f]` without checking `f < dv^.Count` - an out-of-bounds access for rows with missing fields. `TTabularDataSet` therefore normalizes the rows first (all columns in the same order); when using `DocVariantToDataSet` directly with uneven rows, the risk remains. Fixed in the separate branches `fix/docvariantarraydataset-field-bounds` (out-of-bounds `Names[]` read, commit `7e71b67`) and `fix/docvariantarraydataset` (additionally fixes the incomplete Int64/Float column check of the constructor, commit `d72e12d`) of `tobfel/mORMot2`.
-- PostgreSQL creates the (unquoted) column names in lower case: `Art.Nr` becomes `art_nr`, and `SqlDBToTabular` returns them that way.
+- PostgreSQL creates the (unquoted) column names in lower case: `Art.Nr` becomes `art_nr`, and `FetchAllToDocVariantArray` returns them that way.
 - Rows which should end up as a date in an `ftDate` column must be `varDate` or ISO 8601 text; `31.01.2024` is rejected.

@@ -80,11 +80,52 @@ begin
   result := J(_JsonFast(json));
 end;
 
+// local test helpers, replacing the former one-liner API
+function CsvToJson(const Csv: RawByteString; Options: TTabularOptions = TABULAR_DEFAULT;
+  Delimiter: AnsiChar = ','): RawUtf8;
+begin
+  result := J(CsvToVariant(Csv, Options, Delimiter));
+end;
+
+function JsonToCsv(const Json: RawUtf8; Options: TTabularOptions = TABULAR_DEFAULT;
+  Delimiter: AnsiChar = ','): RawUtf8;
+begin
+  result := VariantToCsv(_JsonFast(Json), Options, Delimiter);
+end;
+
+function LoadJ(Doc: TTabularDocument; const Data: RawByteString): RawUtf8;
+var
+  v: variant;
+begin
+  Doc.Load(Data, v);
+  result := J(v);
+end;
+
+function SheetNames(Doc: TXlsxDocument; const Data: RawByteString): RawUtf8;
+var
+  s: TXlsxSheetDynArray;
+  i: PtrInt;
+begin
+  s := Doc.GetSheets(Data);
+  result := '';
+  for i := 0 to length(s) - 1 do
+    if i = 0 then
+      result := s[i].Name
+    else
+      result := Make([result, ',', s[i].Name]);
+end;
+
 function ExpectError(c: TTabularDocument; const data: RawByteString): boolean;
 var
   v: variant;
 begin
-  result := not c.TryLoad(data, v) and (c.LastError <> '');
+  result := false;
+  try
+    c.Load(data, v);
+  except
+    on E: ETabularException do
+      result := E.Message <> '';
+  end;
 end;
 
 procedure TestCsvRead;
@@ -164,7 +205,7 @@ begin
     c.MaxRows := 0;
     // lenient vs strict
     c.Options := [];
-    CheckEqual(c.LoadToJson('a"b,"c"d,"e'), '[["a\"b","cd","e"]]', 'lenient');
+    CheckEqual(LoadJ(c, 'a"b,"c"d,"e'), '[["a\"b","cd","e"]]', 'lenient');
     c.CsvOptions := [csoStrict];
     Check(ExpectError(c, 'a"b,c'), 'strict bare quote');
     Check(ExpectError(c, '"c"d,e'), 'strict char after quote');
@@ -234,14 +275,13 @@ procedure TestXlsxRead;
 var
   x: TXlsxDocument;
   v: variant;
-  names: TRawUtf8DynArray;
   dt: TDateTime;
 begin
   writeln('XLSX reading');
   x := TXlsxDocument.Create([tboHeader, tboEmptyAsNull]);
   try
-    names := x.GetSheetNames(StringFromFile(Fixtures + 'openpyxl.xlsx'));
-    CheckEqual(RawUtf8ArrayToCsv(names), 'Data,Zweite Tabelle,Hidden', 'sheet names');
+    CheckEqual(SheetNames(x, StringFromFile(Fixtures + 'openpyxl.xlsx')),
+      'Data,Zweite Tabelle,Hidden', 'sheet names');
     x.LoadFromFile(Fixtures + 'openpyxl.xlsx', v);
     CheckEqual(J(v),
       '[{"id":1,"name":"Alice","amount":1234.5,"flag":true,"date":"2024-01-31",' +
@@ -263,7 +303,7 @@ begin
     x.LoadFromFile(Fixtures + 'openpyxl.xlsx', v);
     CheckEqual(J(v), '[{"a":"x","b":1.5}]', 'sheet by name');
     x.SheetName := '';
-    x.LoadSheetsFromFile(Fixtures + 'openpyxl.xlsx', v, {hidden=}false);
+    x.LoadSheets(StringFromFile(Fixtures + 'openpyxl.xlsx'), v, {hidden=}false);
     CheckEqual(RawUtf8ArrayToCsv(_Safe(v)^.GetNames), 'Data,Zweite Tabelle',
       'LoadSheets without hidden');
     x.LoadFromFile(Fixtures + 'date1904.xlsx', v);
@@ -326,10 +366,10 @@ begin
       '{"Name":" lead","Age":null,"Price":null,"Ok":null,"When":null,' +
       '"Extra":null,"Big":1234567890123456}]'), 'xlsx round-trip');
     // several sheets as a TDocVariant object, with sanitized names
-    bin := x.SaveJson('{"Sales/2024":[{"a":1}],"Sales/2024 ":[[1,2],[3]],' +
-      '"[]":[]}');
+    bin := x.Save(_JsonFast('{"Sales/2024":[{"a":1}],"Sales/2024 ":[[1,2],[3]],' +
+      '"[]":[]}'));
     FileFromString(bin, OutDir + 'sheets.xlsx');
-    CheckEqual(RawUtf8ArrayToCsv(x.GetSheetNames(bin)),
+    CheckEqual(SheetNames(x, bin),
       'Sales_2024,Sales_2024 (2),__', 'sheet names sanitized');
     x.LoadSheets(bin, w);
     // [[1,2],[3]] with tboHeader: first row [1,2] are the column names
@@ -337,7 +377,7 @@ begin
       '"2":null}],"__":[]}', 'LoadSheets');
     x.Options := [];
     x.SheetName := 'Matrix';
-    bin := x.SaveJson('[[1,"two",3.5],[],[null,true]]');
+    bin := x.Save(_JsonFast('[[1,"two",3.5],[],[null,true]]'));
     FileFromString(bin, OutDir + 'matrix.xlsx');
     x.SheetName := '';
     x.Load(bin, w);

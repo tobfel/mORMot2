@@ -161,17 +161,8 @@ type
 function CsvToVariant(const Csv: RawByteString;
   Options: TTabularOptions = TABULAR_DEFAULT; Delimiter: AnsiChar = ','): variant;
 
-/// parse CSV content into a JSON array of rows
-function CsvToJson(const Csv: RawByteString;
-  Options: TTabularOptions = TABULAR_DEFAULT; Delimiter: AnsiChar = ',';
-  Format: TTextWriterJsonFormat = jsonCompact): RawUtf8;
-
 /// serialize a TDocVariant array of rows as RFC 4180 CSV
 function VariantToCsv(const Doc: variant;
-  Options: TTabularOptions = TABULAR_DEFAULT; Delimiter: AnsiChar = ','): RawUtf8;
-
-/// serialize a JSON array of rows as RFC 4180 CSV
-function JsonToCsv(const Json: RawUtf8;
   Options: TTabularOptions = TABULAR_DEFAULT; Delimiter: AnsiChar = ','): RawUtf8;
 
 
@@ -263,7 +254,7 @@ var
   end;
 
 begin
-  TabularDecodeText(Data, fCodePage, text);
+  DecodeText(Data, fCodePage, text);
   P := pointer(text);
   PEnd := P + length(text);
   fLine := 1;
@@ -562,7 +553,7 @@ begin
     vd := VarDataFromVariant(Cells[i]^);
     if vd^.VType in [varEmpty, varNull] then
       WriteField(nil, 0, false)
-    else if TabularIsNumber(vd) or
+    else if IsNumber(vd) or
             (vd^.VType = varBoolean) or
             (vd^.VType = varDate) then
     begin
@@ -630,19 +621,6 @@ begin
   end;
 end;
 
-function CsvToJson(const Csv: RawByteString; Options: TTabularOptions;
-  Delimiter: AnsiChar; Format: TTextWriterJsonFormat): RawUtf8;
-var
-  c: TCsvDocument;
-begin
-  c := TCsvDocument.CreateDelimiter(Delimiter, Options);
-  try
-    result := c.LoadToJson(Csv, Format);
-  finally
-    c.Free;
-  end;
-end;
-
 function VariantToCsv(const Doc: variant; Options: TTabularOptions;
   Delimiter: AnsiChar): RawUtf8;
 var
@@ -655,19 +633,5 @@ begin
     c.Free;
   end;
 end;
-
-function JsonToCsv(const Json: RawUtf8; Options: TTabularOptions;
-  Delimiter: AnsiChar): RawUtf8;
-var
-  c: TCsvDocument;
-begin
-  c := TCsvDocument.CreateDelimiter(Delimiter, Options);
-  try
-    result := c.SaveJson(Json);
-  finally
-    c.Free;
-  end;
-end;
-
 
 end.
