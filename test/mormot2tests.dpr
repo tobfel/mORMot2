@@ -76,6 +76,7 @@ uses
   test.ui.pdf            in '.\test.ui.pdf.pas',
   {$endif HAS_UI_PDF}
   test.net.proto           in '.\test.net.proto.pas',
+  test.net.s3              in '.\test.net.s3.pas',
   test.orm.core            in '.\test.orm.core.pas',
   test.orm.sqlite3         in '.\test.orm.sqlite3.pas',
   test.orm.extdb           in '.\test.orm.extdb.pas',
@@ -168,7 +169,8 @@ begin
     TTestCoreCrypto,
     TTestCoreEcc,
     TTestCoreCompression,
-    TNetworkProtocols
+    TNetworkProtocols,
+    TNetworkS3
   ]);
 end;
 
