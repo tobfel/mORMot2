@@ -26,14 +26,16 @@ uses
   mormot.core.test,
   mormot.db.core,
   mormot.db.sql,
+  mormot.db.proxy,
   mormot.db.raw.duckdb,
-  mormot.db.sql.duckdb;
+  mormot.db.sql.duckdb,
+  mormot.db.sql.duckdbproxy;
 
 type
   /// regression tests for mormot.db.sql.duckdb.pas
   TTestDuckDB = class(TSynTestCase)
   protected
-    fProps: TSqlDBDuckDBConnectionProperties;
+    fProps: TSqlDBConnectionProperties;
     function Prepare: boolean; override;
     procedure CleanUp; override;
   published
@@ -47,6 +49,19 @@ type
     procedure Bulk;
     procedure BatchInsert;
     procedure Appender;
+  end;
+
+  /// regression tests for mormot.db.sql.duckdbproxy.pas
+  // - run all TTestDuckDB tests through a mormot.db.proxy client
+  // - on 64-bit, connect to an in-process TSqlDBServerRemote
+  // - on Win32, launch duckdbproxy.exe (Win64) via CreateWithProcess - if
+  // duckdbproxy.exe and duckdb.dll are located next to the test executable
+  TTestDuckDBProxy = class(TTestDuckDB)
+  protected
+    fDirect: TSqlDBConnectionProperties;
+    fServer: TSqlDBServerRemote;
+    function Prepare: boolean; override;
+    procedure CleanUp; override;
   end;
 
 
@@ -100,12 +115,13 @@ var
   end;
 
 begin
+  {$ifdef CPU64} // the DuckDB C API is only available as 64-bit library
   CheckEqual(SizeOf(TDuckDBStringT),   16, 'SizeOf(TDuckDBStringT)');
   CheckEqual(SizeOf(TDuckDBHugeInt),   16, 'SizeOf(TDuckDBHugeInt)');
   CheckEqual(SizeOf(TDuckDBInterval),  16, 'SizeOf(TDuckDBInterval)');
   CheckEqual(SizeOf(TDuckDBListEntry), 16, 'SizeOf(TDuckDBListEntry)');
-  CheckEqual(SizeOf(TDuckDBResult),
-    3 * SizeOf(TDuckIdx) + 3 * SizeOf(pointer), 'SizeOf(TDuckDBResult)');
+  CheckEqual(SizeOf(TDuckDBResult),    48, 'SizeOf(TDuckDBResult)');
+  {$endif CPU64}
   FillCharFast(buf, SizeOf(buf), 255);
   h.Lower := 12345;
   h.Upper := 0;
@@ -428,8 +444,8 @@ var
   rows: ISqlDBRows;
   timer: TPrecisionTimer;
 begin
-  if fProps = nil then
-    exit;
+  if not (fProps is TSqlDBDuckDBConnectionProperties) then
+    exit; // OnBatchInsert uses the DuckDB appender, not available via the proxy
   Check(Assigned(fProps.OnBatchInsert), 'OnBatchInsert');
   CheckEqual(ord(fProps.BatchSendingAbilities = [cCreate]), 1);
   fProps.ExecuteNoResult('create or replace table arr (id INTEGER, ' +
@@ -502,8 +518,8 @@ var
   rows: ISqlDBRows;
   timer: TPrecisionTimer;
 begin
-  if fProps = nil then
-    exit;
+  if not (fProps is TSqlDBDuckDBConnectionProperties) then
+    exit; // the DuckDB appender API is not available via mormot.db.proxy
   fProps.ExecuteNoResult('create or replace table app (id INTEGER, ' +
     'v DECIMAL(19,4), t VARCHAR, d TIMESTAMP)', []);
   timer.Start;
@@ -527,6 +543,46 @@ begin
   Check(rows.Step);
   CheckEqual(rows.ColumnInt(0), 20001, 'appender count');
   CheckEqual(rows.ColumnUtf8(1), '200012469.5000', 'appender sum');
+end;
+
+
+{ TTestDuckDBProxy }
+
+const
+  DUCKDBPROXY_TEST_PORT = 18092;
+
+function TTestDuckDBProxy.Prepare: boolean;
+begin
+  result := false;
+  {$ifdef CPU64}
+  if not inherited Prepare then
+    exit;
+  fDirect := fProps; // published by an in-process server
+  fProps := nil;
+  fServer := TSqlDBServerRemote.Create(fDirect, DUCKDBPROXY_DEFAULT_NAME,
+    Int32ToUtf8(DUCKDBPROXY_TEST_PORT), 'user', 'pass');
+  fProps := TSqlDBDuckDBProxyConnectionProperties.Create(
+    '127.0.0.1:' + Int32ToUtf8(DUCKDBPROXY_TEST_PORT),
+    DUCKDBPROXY_DEFAULT_NAME, 'user', 'pass');
+  result := true;
+  {$else}
+  {$ifdef OSWINDOWS}
+  // a 32-bit process needs the 64-bit duckdbproxy.exe wrapper
+  if not FileExists(Executable.ProgramFilePath + 'duckdbproxy.exe') or
+     not FileExists(Executable.ProgramFilePath + DuckDBLibraryName) then
+    exit;
+  fProps := TSqlDBDuckDBProxyConnectionProperties.CreateWithProcess(
+    Executable.ProgramFilePath + 'duckdbproxy.exe', '', DUCKDBPROXY_TEST_PORT);
+  result := true;
+  {$endif OSWINDOWS}
+  {$endif CPU64}
+end;
+
+procedure TTestDuckDBProxy.CleanUp;
+begin
+  inherited CleanUp; // close the client (and its process) before the server
+  FreeAndNil(fServer);
+  FreeAndNil(fDirect);
 end;
 
 end.
