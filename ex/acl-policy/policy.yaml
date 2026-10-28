@@ -1,0 +1,52 @@
+# Sample NTFS ACL policy for the aclpolicy tool and mormot.app.aclpolicy unit
+# - paths are written between single quotes, since backslashes are escape
+#   characters within double quotes
+# - the most specific rule (i.e. the longest path) applies to each item
+
+settings:
+  server: ''              # server used to resolve 'DOMAIN\Account' names
+  takeOwnership: false    # take ownership if a DACL can't be written
+
+rules:
+  # a protected folder: its content should only inherit from it
+  - name: Projects
+    path: 'D:\Data\Projects'
+    inheritance: false    # protected DACL, i.e. no inheritance from D:\Data
+    owner: BA             # BUILTIN\Administrators
+    ace:
+      - allow: SY
+        rights: full
+      - allow: BA
+        rights: full
+      - allow: BU         # BUILTIN\Users - SDDL aliases are language-neutral
+        rights: readexecute
+      # - allow: 'CORP\Project-Team'   # account names are resolved via LookupName
+      #   rights: modify
+      - '(A;OICI;0x1301bf;;;S-1-5-21-1111111111-2222222222-3333333333-1234)'
+    exclude:              # exceptions, relative to the rule path
+      - '*.tmp'           # any .tmp file, in any sub-folder
+      - 'Archive'         # this sub-folder with all its content
+
+  # a single file with its own explicit ACL
+  - path: 'D:\Data\Projects\secret.ini'
+    kind: file
+    inheritance: false
+    ace:
+      - allow: SY
+        rights: full
+      - allow: BA
+        rights: full
+
+  # a sub-folder which is never checked nor fixed
+  - path: 'D:\Data\Projects\Public'
+    mode: ignore
+
+  # a sub-folder only reported, never fixed, with additional explicit ACEs
+  # allowed (strict: false) and no check of its content (recurse: false)
+  - path: 'D:\Data\Projects\Shared'
+    mode: audit
+    recurse: false
+    strict: false
+    ace:
+      - allow: WD
+        rights: read

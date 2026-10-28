@@ -83,7 +83,8 @@ uses
   test.orm.threads         in '.\test.orm.threads.pas',
   test.orm.network         in '.\test.orm.network.pas',
   test.soa.core            in '.\test.soa.core.pas',
-  test.soa.network         in '.\test.soa.network.pas';
+  test.soa.network         in '.\test.soa.network.pas',
+  test.app.aclpolicy       in '.\test.app.aclpolicy.pas';
 
 
 { TIntegrationTests }
@@ -168,7 +169,8 @@ begin
     TTestCoreCrypto,
     TTestCoreEcc,
     TTestCoreCompression,
-    TNetworkProtocols
+    TNetworkProtocols,
+    TTestAppAclPolicy
   ]);
 end;
 

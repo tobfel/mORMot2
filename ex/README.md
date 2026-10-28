@@ -89,6 +89,12 @@ It is a fully featured sample built with FPC, hosting its own *SQLite3* database
 
 You will see the console output of the server logs, with all threads and events, in real time.
 
+### acl-policy
+
+[A command line tool to check, fix and watch Windows NTFS ACLs](./acl-policy), as defined in a YAML policy file.
+
+It uses the `mormot.app.aclpolicy` unit, which is based on the `TSecurityDescriptor` wrapper of `mormot.core.os.security`, and on the YAML parser of `mormot.core.fmt`. Folders, single files and exceptions (`exclude:` patterns or `mode: ignore` rules) can be defined: see [the sample policy.yaml](./acl-policy/policy.yaml).
+
 ## ThirdPartyDemos
 
 [The `ThirdPartyDemos` folder](./ThirdPartyDemos) contains sub-folders with some example code committed by third party *mORMot* users.

@@ -30,3 +30,9 @@ Launch, Watch and Kill Services or Executables from a main Service Instance
 - `TSynAngelizeService` Sub-Service Settings and Process
 - `TSynAngelize` Main Service Launcher and Watcher
 
+### mormot.app.aclpolicy
+
+Windows NTFS ACL Policy Checker, Fixer and Watcher
+- `TAclPolicyRule` Definition of one Folder or File Policy Rule
+- `TAclPolicy` YAML Policy Loading, Checking and Enforcing
+- `TAclPolicyWatcher` Live Folder Watching and Enforcement
