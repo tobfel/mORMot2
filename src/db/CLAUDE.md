@@ -174,6 +174,29 @@ benchmark or sell it on insertion numbers.
 5. Fix Delphi warning W1073 in `mormot.db.raw.duckdb.pas` (`DuckTimeToText`: signed
    constant mixed with `QWord` in `u mod DUCKDB_MICROSPERSEC`).
 
+### VARIANT columns (DuckDB 1.5+)
+
+VARIANT results are currently returned as JSON text, **without decoding the binary
+layout**: `DuckDBVariantSql()` re-executes the statement wrapped in
+`SELECT #1 AS "a", NULLIF(#2::JSON, 'null'::JSON) AS "b" FROM (sql)` so that DuckDB
+does the conversion (embedded: `TSqlDBDuckDBStatement.ExecuteVariantAsJson`, Quack:
+`TSqlDBQuackStatement.ExecutePrepared`, detected via `TQuackResponse.VariantColumns`).
+Known limits: the statement runs twice, a VARIANT in a multi-statement SQL (dynamic
+PIVOT, `fDirectQuery`) raises, and values are JSON text, not typed.
+
+Possible future work - decode the binary format natively (est. 400-600 lines):
+- Physical layout: `STRUCT(keys LIST(VARCHAR), children LIST(STRUCT(keys_index,
+  values_index)), values LIST(STRUCT(type_id, byte_offset)), data BLOB)`, see DuckDB
+  `variant.hpp` (LogicalTypeId 109, C API `DUCKDB_TYPE_VARIANT` = 41).
+- Walk from `values[0]`: primitives are fixed-size little-endian at `byte_offset`,
+  VARCHAR/BLOB are LEB128 length + bytes, DECIMAL has width/scale, OBJECT/ARRAY have a
+  LEB128 count and a start index in `children`. Output as JSON or `TDocVariant`.
+- Benefits: no second execution, no multi-statement limit, faster, typed values.
+- Risks: the format is not documented as stable (type ids and layout may differ between
+  1.5.x and 2.x), and on-disk shredded variants must be checked. A wrong decoding is a
+  silent data error: keep the SQL JSON path as fallback for any unknown `type_id`, and
+  compare against `::JSON` on real data in the tests.
+
 ### Code quality
 
 The general code-quality rules derived from this review (parse once, no duplicated
