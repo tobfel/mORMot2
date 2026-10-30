@@ -8,7 +8,11 @@ It answers two questions:
 - when does DuckDB pay off compared with the usual mORMot storage engines?
 - how much SQL does each engine need for typical analytics?
 
-## The data: TPC-H
+## The datasets
+
+Two datasets (`--dataset` option): a standard benchmark, and real open data.
+
+### `tpch`: the TPC-H benchmark
 
 [TPC-H](https://www.tpc.org/tpch/) is the reference benchmark for analytical
 (decision support) databases: 8 tables of a wholesale supplier (orders,
@@ -23,14 +27,33 @@ line items, customers, parts, suppliers, nations, regions) and 22 queries.
   see also [ClickBench](https://benchmark.clickhouse.com/) (100 million rows of
   web analytics).
 
-`dbbench --prepare` generates the data with DuckDB, then copies it into SQLite3
-and PostgreSQL via DuckDB `ATTACH (TYPE sqlite)` and `ATTACH (TYPE postgres)`,
-so all engines hold exactly the same rows.
+### `rail`: the Dutch railways open data
+
+[Rijden de Treinen](https://www.rijdendetreinen.nl/en/open-data) publishes every
+train service of the Netherlands since 2019, with each stop, its delay,
+cancellation and platform change (CC BY 4.0): about 22 million stops and
+2.4 million services per year, as gzipped CSV.
+
+- **Real data with real questions:** punctuality, delays per station and hour,
+  cancellations - the kind of report an application has to produce.
+- **Normalized like an application database:** `sql/rail/load.duckdb.sql` splits
+  the CSV into `stations`, `services` and `stops` tables, as an ORM would store
+  them, so the queries join.
+- **Scalable:** `--years 2023,2024` loads several years (one file per year).
+
+### Loading
+
+`dbbench --prepare` loads the data with DuckDB (`dbgen` for `tpch`, `read_csv`
+over HTTPS for `rail`), then copies it into SQLite3 and PostgreSQL via DuckDB
+`ATTACH (TYPE sqlite)` and `ATTACH (TYPE postgres)`, so all engines hold exactly
+the same rows.
 
 ## The queries
 
 All queries fetch all their rows. The numbers of each result are summed and
 compared between the engines: a `*` in the results marks a different result.
+
+### `tpch` queries
 
 | file | what | why |
 |---|---|---|
@@ -50,9 +73,22 @@ compared between the engines: a `*` in the results marks a different result.
 | `p1` | 10,000 point lookups by primary key | OLTP |
 | `p2` | 10,000 single-row inserts in one transaction | OLTP |
 
-`queries/xxx.sql` is the DuckDB SQL, `queries/xxx.pg.sql` and
-`queries/xxx.sqlite.sql` override it when the dialect differs.
-`p1` and `p2` use cached prepared statements, as the mORMot ORM does.
+### `rail` queries
+
+| file | what | why |
+|---|---|---|
+| `r1` | punctuality (arrivals less than 3 minutes late) per month and company | join of all stops |
+| `r2` | stations with the highest average departure delay | aggregate, then join |
+| `r3` | delay and late departures per hour of the day and train type | join, time functions |
+| `r4` | median and 95th percentile of the delay per train type | percentiles |
+| `r5` | cancelled services per day of the week | date functions |
+| `r6` | the 20 most delayed services, with their first and last station | arg min / max |
+| `r7` | daily departures of one station with a 7-day moving average | selective, window |
+| `r8` | stations with the most platform changes | aggregate, then join |
+
+`queries/<dataset>/xxx.sql` is the DuckDB SQL, `xxx.pg.sql` and `xxx.sqlite.sql`
+override it when the dialect differs. `p1` and `p2` use cached prepared
+statements, as the mORMot ORM does.
 
 ## The engines
 
@@ -71,17 +107,20 @@ analytics with the DuckDB engine on the same data, with no migration.
 
 ## Indexes: best practice for each engine
 
-- **SQLite3** (`sql/schema.sqlite.sql`, `sql/index.sqlite.sql`): `INTEGER PRIMARY KEY`
+The files are in `sql/tpch` and `sql/rail`.
+
+- **SQLite3** (`schema.sqlite.sql`, `index.sqlite.sql`): `INTEGER PRIMARY KEY`
   (the rowid), composite key for `lineitem` and `partsupp`, one index per foreign
-  key and per filtered date, a covering index for Q6, then `ANALYZE`.
+  key and per filtered date, covering indexes for `q06` and for the per-station
+  aggregates of `rail`, then `ANALYZE`.
   Connection settings: 8 KB pages, WAL, 2 GB page cache, 8 GB `mmap_size`,
   in-memory temporary storage.
-- **PostgreSQL** (`sql/schema.pg.sql`, `sql/index.pg.sql`): `NUMERIC(15,2)` as in
+- **PostgreSQL** (`schema.pg.sql`, `index.pg.sql`): `NUMERIC(15,2)` as in
   the TPC-H specification, `VARCHAR` instead of `CHAR(n)`, primary keys and the
-  same secondary indexes created after the load, a covering index for Q6
-  (`INCLUDE`), then `VACUUM ANALYZE` for the statistics and the index-only scans.
+  same secondary and covering indexes created after the load, then
+  `VACUUM ANALYZE` for the statistics and the index-only scans.
   Server settings in [PostgreSQL settings](#postgresql-settings).
-- **DuckDB** (`sql/index.duckdb.sql`): no index for analytics. DuckDB stores
+- **DuckDB** (`sql/tpch/index.duckdb.sql`): no index for analytics. DuckDB stores
   min/max values per row group (zonemaps) and skips data with them. A primary key
   on `orders` is only there for the point lookups (`p1`).
 
@@ -93,9 +132,12 @@ sudo -u postgres psql -c "create user bench password 'bench' superuser"
 
 # compile dbbench.dpr with Delphi or FPC (64-bit for the embedded DuckDB),
 # put libduckdb.so / duckdb.dll next to it, then:
-./dbbench --prepare --sf 1 -d /data        # generate and load (once)
+./dbbench --prepare --sf 1 -d /data        # generate and load TPC-H (once)
 ./dbbench --sf 1 -d /data --md sf1.md      # run all queries, 5 runs each
 ./dbbench --sf 1 -d /data -o q01,a3 -e duckdb,sqlite   # a subset
+
+./dbbench --prepare -s rail --years 2024 -d /data   # download and load
+./dbbench -s rail --years 2024 -d /data --md rail-2024.md
 ./dbbench --help
 ```
 
@@ -103,8 +145,10 @@ Each query runs once to warm the caches and check the result, then `--runs`
 times (5 by default): the table shows the median. A warm-up longer than
 `--maxseconds` (30 by default) is not repeated (`^` in the table).
 
-`--prepare` installs the DuckDB `tpch`, `sqlite` and `postgres` extensions; use
-`--extrepo https://extensions.duckdb.org` if plain HTTP is blocked.
+`--prepare` installs the DuckDB `tpch`, `sqlite`, `postgres` (and `httpfs`)
+extensions; use `--extrepo https://extensions.duckdb.org` if plain HTTP is
+blocked. For `rail`, `--railurl` can point to a local copy of the
+`services/services-YYYY.csv.gz` and `stations/stations-2023-09.csv` files.
 
 ## PostgreSQL settings
 
@@ -118,6 +162,40 @@ max_parallel_workers = 4
 random_page_cost = 1.1
 max_wal_size = 8GB
 ```
+
+## Results: rail 2024
+
+Same execution environment as below, 2024 data:
+21,857,914 stops, 2,395,636 services, 591 stations.
+
+| | DuckDB | SQLite3 | PostgreSQL |
+|---|---:|---:|---:|
+| file / database size | 307 MB | 1.9 GB | 2.7 GB |
+| load | 31 s (from the local CSV.gz) | 40 s (copy from DuckDB) | 38 s (copy from DuckDB) |
+| indexes and statistics | - | 1 min 42 s | 1 min 13 s |
+
+| query | rows | duckdb | sqlite (mORMot static 3.51.2) | sqlite (libsqlite3 3.45.1) | postgres | duckdb-sqlite | duckdb-postgres |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| r1-punctuality-month | 158 | **486.91ms** | 32.91s^ | 18.40s | 2.46s | 1.33s | 2.56s |
+| r2-worst-stations | 10 | **41.79ms** | 8.13s | 1.44s | 435.73ms | 836.41ms | 1.64s |
+| r3-delay-by-hour | 217 | **409.07ms** | 36.69s^ | 23.55s | 7.76s | 1.63s | 3.89s |
+| r4-delay-percentiles | 18 | **770.11ms** | 2m25^ | 1m14^ | 9.88s | 1.45s | 2.15s |
+| r5-cancellations-weekday | 7 | **10.74ms** | 2.47s | 1.12s | 165.83ms | 94.92ms | 173.21ms |
+| r6-most-delayed-trips | 20 | **48.14ms** | 688.02ms | 134.14ms | 102.16ms | 1.68s | 2.22s |
+| r7-station-daily-trend | 366 | **62.05ms** | 993.05ms | 670.88ms | 1.21s | 1.32s | 702.98ms |
+| r8-platform-changes | 10 | **31.89ms** | 7.40s | 1.38s | 440.31ms | 818.82ms | 1.68s |
+
+All engines returned the same results; `^` is a single run (more than 30 s).
+
+- On real data the picture is the same as with TPC-H: DuckDB is 3 to 190 times
+  faster than SQLite3 (depending on the library) and 2 to 20 times faster than
+  PostgreSQL. The gap is the smallest for the selective `r6` / `r7`, which use
+  the indexes of SQLite3 and PostgreSQL, and the largest for the joins over all
+  22 million stops (`r1`, `r3`, `r4`).
+- The DuckDB file is 6 times smaller than SQLite3 and 9 times smaller than
+  PostgreSQL, indexes included.
+- The hybrid `duckdb-sqlite` runs the heavy reports `r1`, `r3` and `r4` from the
+  SQLite3 file 14 to 100 times faster than SQLite3 itself.
 
 ## Results: TPC-H scale factor 1
 
