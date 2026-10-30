@@ -1,5 +1,7 @@
 # dbbench - DuckDB vs SQLite3 vs PostgreSQL for analytics
 
+English | [Deutsch](README.de.md)
+
 `dbbench` runs the same analytical queries on DuckDB, SQLite3 and PostgreSQL,
 all through the `mormot.db.sql` classes, so the numbers are what a mORMot
 application gets.
@@ -265,7 +267,7 @@ slower on these read-only queries (the reason is not investigated yet).
   faster than PostgreSQL for the heavy queries (`a2`, `a3`, `a5`, `a6`, `a7`,
   `q18`), slower for the index-friendly ones.
 - **Query tuning, as an experienced user would do** (see the comments in the
-  `queries/*.pg.sql` / `*.sqlite.sql` files):
+  `queries/*/*.pg.sql` / `*.sqlite.sql` files):
   - SQLite3 `q01`: the planner used the `l_shipdate` index for 98% of the rows
     (26 s). The unary `+l_shipdate` disables it: 17 s.
   - SQLite3 `q12`: `CROSS JOIN` forces scanning `lineitem` first, which is twice
@@ -274,12 +276,14 @@ slower on these read-only queries (the reason is not investigated yet).
     `max()` per group takes 0.4 s.
   - PostgreSQL `a7`: `count(DISTINCT)` always sorts; a `DISTINCT` sub-query
     allows a parallel hash aggregate (5.4 s to 2 s).
+  - `rail` `r2` / `r8`: aggregate per station first, then join `stations`
+    (the same SQL on all engines) - SQLite3 from 10.7 s to 1.7 s.
   - DuckDB needed no tuning.
 
 ## SQL for analytics: DuckDB vs PostgreSQL vs SQLite3
 
-The `a*` queries do the same thing on each engine; compare the files in
-`queries/` to see the differences.
+The `a*` and `r*` queries do the same thing on each engine; compare the files
+in `queries/tpch` and `queries/rail` to see the differences.
 
 | need | DuckDB | PostgreSQL | SQLite3 |
 |---|---|---|---|
@@ -289,7 +293,7 @@ The `a*` queries do the same thing on each engine; compare the files in
 | median, percentiles (`a3`) | `median(x)`, `quantile_cont(x, 0.9)` | `percentile_cont(0.9) WITHIN GROUP (ORDER BY x)` | none by default: 2 windows + interpolation |
 | pivot table (`a4`) | `PIVOT ... ON col IN (...) USING sum(x)` | `sum(x) FILTER (WHERE col = ...)` per column | `sum(x) FILTER (WHERE col = ...)` per column |
 | subtotals (`a5`) | `GROUP BY ROLLUP / CUBE / GROUPING SETS` | `GROUP BY ROLLUP / CUBE / GROUPING SETS` | one `UNION ALL` per level |
-| value at the maximum (`a6`) | `arg_max(key, value)` | `DISTINCT ON (...) ... ORDER BY` | bare column next to `max()` |
+| value at the maximum (`a6`, `r6`) | `arg_max(key, value)` | `DISTINCT ON (...) ... ORDER BY`, or a join with `max()` | bare column next to `max()` |
 | closest previous row in time | `ASOF JOIN` | `LATERAL (... ORDER BY ... LIMIT 1)` | correlated sub-query |
 | columns by pattern | `SELECT * EXCLUDE (a)`, `COLUMNS('price_.*')` | - | - |
 | profile a table | `SUMMARIZE orders` | - | - |
