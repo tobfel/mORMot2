@@ -9803,7 +9803,7 @@ begin
     CheckEqual(doc.O['dst']^.I['k30000'], 30000, 'merged value');
     CheckUtf8(start < 2000, 'O(n) anchors and merges: %ms', [start]);
     // 6. deterministic mini-fuzzer over the golden cases: any input should
-    // generate valid JSON or raise EYamlException - nothing else
+    // generate strict valid JSON or raise EYamlException - nothing else
     seed := 2463534242;
     ok := 0;
     raised := 0;
@@ -9837,7 +9837,7 @@ begin
         end;
         try
           json := YamlToJson(y);
-          if IsValidJson(json) then
+          if IsValidJson(json, {strict=}true) then // no extended JSON
             inc(ok)
           else
             CheckUtf8(false, 'fuzz #% invalid JSON from %', [i, y]);
