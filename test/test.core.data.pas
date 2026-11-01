@@ -9108,7 +9108,7 @@ type
 
 const
   // golden cases, covering the I/O matrix of spec-yaml-support.md
-  GOLDEN: array[0..31] of TYamlGoldenCase = (
+  GOLDEN: array[0..41] of TYamlGoldenCase = (
     (Name: 'empty-flow-map';
      Yaml: '{}';
      ExpectedJson: '{}'),
@@ -9251,18 +9251,57 @@ const
      // that depth continue the inner seq. Discovered via GitHub REST spec
      // line 223996 (sort_by: [[123, asc], [456, desc]]).
      Yaml: 'k:'#10'- - 1'#10'  - 2'#10'- - 3'#10'  - 4';
-     ExpectedJson: '{"k":[[1,2],[3,4]]}')
+     ExpectedJson: '{"k":[[1,2],[3,4]]}'),
+    (Name: 'anchor-alias-scalar';
+     Yaml: 'a: &ref 1 # c'#10'b: *ref # c'#10'c: [*ref, &s txt, *s]';
+     ExpectedJson: '{"a":1,"b":1,"c":[1,"txt","txt"]}'),
+    (Name: 'anchor-alias-block-map';
+     Yaml: 'base: &b'#10'  x: 1'#10'  y: [2, 3]'#10'copy: *b';
+     ExpectedJson: '{"base":{"x":1,"y":[2,3]},"copy":{"x":1,"y":[2,3]}}'),
+    (Name: 'anchor-alias-seq';
+     Yaml: 'a: &l'#10'- 1'#10'- 2'#10'b:'#10'  - *l'#10'  - - *l';
+     ExpectedJson: '{"a":[1,2],"b":[[1,2],[[1,2]]]}'),
+    (Name: 'anchor-on-seq-items';
+     Yaml: '- &i'#10'  n: x'#10'- &j n: y'#10'- *i'#10'- *j';
+     ExpectedJson: '[{"n":"x"},{"n":"y"},{"n":"x"},{"n":"y"}]'),
+    (Name: 'anchor-block-scalar';
+     Yaml: 't: &t |'#10'  hello'#10'u: *t';
+     ExpectedJson: '{"t":"hello\n","u":"hello\n"}'),
+    (Name: 'anchor-redefined';
+     Yaml: '- &a 1'#10'- *a'#10'- &a 2'#10'- *a';
+     ExpectedJson: '[1,1,2,2]'),
+    (Name: 'merge-key';
+     // explicit keys override merged keys, which are appended at the end
+     Yaml: 'def: &d'#10'  host: localhost'#10'  port: 5432'#10 +
+           'dev:'#10'  <<: *d'#10'  port: 5433'#10'  db: dev';
+     ExpectedJson: '{"def":{"host":"localhost","port":5432},' +
+       '"dev":{"port":5433,"db":"dev","host":"localhost"}}'),
+    (Name: 'merge-key-list';
+     // the first merged mapping wins over the next ones
+     Yaml: 'a: &a {p: 1, q: 2}'#10'b: &b {q: 20, r: 30}'#10 +
+           'c:'#10'  "s": 5'#10'  <<: [*a, *b]'#10'  ''p'': 0';
+     ExpectedJson: '{"a":{"p":1,"q":2},"b":{"q":20,"r":30},' +
+       '"c":{"s":5,"p":0,"q":2,"r":30}}'),
+    (Name: 'merge-key-in-seq';
+     Yaml: '- &i {name: x, v: 1}'#10'- <<: *i'#10'  name: y'#10'- <<: {v: 2}';
+     ExpectedJson: '[{"name":"x","v":1},{"name":"y","v":1},{"v":2}]'),
+    (Name: 'merge-key-escaped';
+     Yaml: 'd: &d {"t\"ab": 2, k: 3}'#10'e:'#10'  <<: *d'#10'  "t\"ab": 9';
+     ExpectedJson: '{"d":{"t\"ab":2,"k":3},"e":{"t\"ab":9,"k":3}}')
   );
 
-  ERRORS: array[0..10] of TYamlGoldenCase = (
-    (Name: 'quoted-double-json-injection';
-     Yaml: 'user: "x","admin":true,"y":"z"';
+  ERRORS: array[0..11] of TYamlGoldenCase = (
+    (Name: 'anchor-on-flow-key';
+     Yaml: 'a: {&ref k: 1}';
      ExpectedJson: ''),
-    (Name: 'quoted-single-json-injection';
-     Yaml: 'user: ''x'',"admin":true';
+    (Name: 'alias-trailing-text';
+     Yaml: 'a: &ref 1'#10'b: *ref text';
      ExpectedJson: ''),
-    (Name: 'anchor';
-     Yaml: 'a: &ref 1'#10'b: *ref';
+    (Name: 'anchor-without-name';
+     Yaml: 'a: & 1';
+     ExpectedJson: ''),
+    (Name: 'merge-key-scalar';
+     Yaml: 'a: &ref 1'#10'b:'#10'  <<: *ref';
      ExpectedJson: ''),
     (Name: 'alias-only';
      Yaml: 'a: *missing';
@@ -9332,6 +9371,9 @@ var
 begin
   for i := low(GOLDEN) to high(GOLDEN) do
     RunGolden(GOLDEN[i].Name, GOLDEN[i].Yaml, GOLDEN[i].ExpectedJson);
+  // "" keys are not supported by TDocVariant, but should be merged as JSON
+  CheckEqual(YamlToJson('d: &d {"": 1, k: 3}'#10'e:'#10'  <<: *d'#10'  "": 0'),
+    '{"d":{"":1,"k":3},"e":{"":0,"k":3}}', 'merge void key');
 end;
 
 procedure TTestCoreProcess.YamlRoundtrip;
@@ -9363,9 +9405,23 @@ end;
 procedure TTestCoreProcess.YamlErrorCases;
 var
   i: PtrInt;
+  saved: Int64;
+  yaml: RawUtf8;
 begin
   for i := low(ERRORS) to high(ERRORS) do
     YamlExpectRaise(Join([' for ', ERRORS[i].Name]), ERRORS[i].Yaml);
+  // "billion laughs" nested aliases must not expand exponentially
+  saved := YamlMaxAliasSize;
+  try
+    YamlMaxAliasSize := 10000;
+    yaml := 'a0: &a0 [x, x, x, x]'#10;
+    for i := 1 to 9 do
+      Append(yaml, FormatUtf8('a%: &a% [*a%, *a%, *a%, *a%]'#10,
+        [i, i, i - 1, i - 1, i - 1, i - 1]));
+    YamlExpectRaise(' for billion laughs', yaml);
+  finally
+    YamlMaxAliasSize := saved;
+  end;
 end;
 
 procedure TTestCoreProcess.YamlFileApi;
