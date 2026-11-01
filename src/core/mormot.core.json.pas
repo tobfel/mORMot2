@@ -65,7 +65,15 @@ type
     jtSlash,
     jtHash,
     jtDollar,
-    jtEndOfBuffer);
+    jtEndOfBuffer,
+    // internal tokens used by TJsonParser.GotoEnd strict separators validation
+    jtStrictDoubleQuote,
+    jtStrictValue,
+    jtStrictOpen,
+    jtStrictClose,
+    jtStrictAssign,
+    jtStrictComma,
+    jtStrictEnd);
 
   /// defines a lookup table used for branch-less first char JSON parsing
   TJsonTokens = array[AnsiChar] of TJsonToken;
@@ -113,6 +121,8 @@ const
 var
   /// 256-byte lookup table for fast branchless initial character JSON parsing
   JSON_TOKENS: TJsonTokens;
+  /// JSON_TOKENS[] with jtStrict* tokens, for TJsonParser.GotoEnd strict mode
+  JSON_TOKENS_STRICT: TJsonTokens;
   /// 256-byte lookup table for fast branchless JSON parsing
   // - to be used e.g. as:
   // ! if jcJsonIdentifier in JSON_CHARS[P^] then ...
@@ -204,17 +214,20 @@ function IsConstantOrNumberJson(P: PUtf8Char; len: PtrUInt): boolean;
 
 /// test if the supplied text buffer seems to be a correct (extended) JSON value
 // - will allow comments and extended MongoDB JSON syntax unless Strict=true
-// - numbers, escaped strings and commas are wild guessed, for performance
+// - numbers and escaped strings are wild guessed, for performance
+// - Strict=true also validates the separators, e.g. rejects [1 2] or {"a":1,}
 function IsValidJson(P: PUtf8Char; len: PtrInt; strict: boolean = false): boolean; overload;
 
 /// test if the supplied text seems to be a correct (extended) JSON value
 // - will allow comments and extended MongoDB JSON syntax unless Strict=true
-// - numbers, escaped strings and commas are wild guessed, for performance
+// - numbers and escaped strings are wild guessed, for performance
+// - Strict=true also validates the separators, e.g. rejects [1 2] or {"a":1,}
 function IsValidJson(const s: RawUtf8; strict: boolean = false): boolean; overload;
 
 /// test if the supplied #0 ended buffer is a correct (extended) JSON value
 // - will allow comments and extended MongoDB JSON syntax unless Strict=true
-// - numbers, escaped strings and commas are wild guessed, for performance
+// - numbers and escaped strings are wild guessed, for performance
+// - Strict=true also validates the separators, e.g. rejects [1 2] or {"a":1,}
 function IsValidJsonBuffer(P: PUtf8Char; strict: boolean = false): boolean;
 
 /// returns the JSON type of a supplied #0 ended buffer
@@ -411,6 +424,7 @@ function GotoEndJsonItem(P: PUtf8Char; PMax: PUtf8Char = nil): PUtf8Char;
 // JSON simple values, i.e. real numbers or only true/false/null constants,
 // and refuse commens or MongoDB extended syntax like {age:{$gt:18}}
 // - numbers and escaped strings are not fully validated, just their charset
+// - the separators of arrays and objects are validated, e.g. rejects [1 2]
 function GotoEndJsonItemStrict(P: PUtf8Char; PMax: PUtf8Char = nil): PUtf8Char;
 
 /// called with P^ = '/' to skip /* comment */ or // comment
@@ -1016,6 +1030,9 @@ type
     {$endif CPUX86}
     State: TJsonParserState;
     ExpectStandard: boolean;
+    // strict separators validation of the current level: 0=just opened,
+    // 1=after value, 2=after comma, 3=after object name, 4=after colon
+    Sep: byte;
     Fmt: TJsonReformatFlags;
     FmtJson: TTextWriterJsonFormat;
     StackCount: integer;
@@ -1034,6 +1051,8 @@ type
       {$ifdef HASINLINE} inline; {$endif}
     function GotoEnd(P: PUtf8Char): PUtf8Char; overload;
     function GotoEnd(P: PUtf8Char; var EndOfObject: AnsiChar): PUtf8Char; overload;
+      {$ifdef HASINLINE} inline; {$endif}
+    function StrictValue: boolean;
       {$ifdef HASINLINE} inline; {$endif}
     // methods used by TJsonWriter.AddJsonReformat()
     procedure InitReformat(JsonFmt: TTextWriterJsonFormat; Writer: TJsonWriter;
@@ -2743,8 +2762,12 @@ begin
   {$endif CPUX86}
   State := stValue;
   ExpectStandard := Strict;
+  Sep := 0;
   StackCount := 0;
-  JsonFirst := @JSON_TOKENS;
+  if Strict then
+    JsonFirst := @JSON_TOKENS_STRICT // with some additional jtStrict* tokens
+  else
+    JsonFirst := @JSON_TOKENS;
   Max := PMax;
 end; // RootCount is not initialized by default unless InitCount() is called
 
@@ -2758,6 +2781,14 @@ begin
   State := First;
 end;
 
+function TJsonParser.StrictValue: boolean;
+begin
+  // a value is expected at the start, or after a comma or a colon
+  result := (State <> stObjectName) and
+            (Sep <> 1);
+  Sep := 1;
+end;
+
 function TJsonParser.GotoEnd(P: PUtf8Char): PUtf8Char;
 var
   n: PtrInt;
@@ -2765,7 +2796,8 @@ var
   JsonSet: PJsonCharSet; // will use a register for this lookup table
   {$endif CPUX86}
 label
-  ident, stop, assign;
+  ident, stop, assign, // regular labels
+  str, num, nul, tru, fal, obj, arr, objstop, arrstop, comma, eob; // strict
 begin
   {$ifndef CPUX86}
   JsonSet := @JSON_CHARS;
@@ -2788,7 +2820,7 @@ begin
         exit;  // unexpected character in JSON input
       jtDoubleQuote: // '"'
         begin
-          repeat // inlined GotoEndOfJsonString2()
+str:      repeat // inlined GotoEndOfJsonString2()
             inc(P);
             if not (jcJsonStringMarker in JsonSet[P^]) then // #0 " \
               continue; // very fast parsing of most UTF-8 chars
@@ -2808,7 +2840,7 @@ begin
         end;
       jtFirstDigit: // '-', '0'..'9'
         begin
-          if (State = stObjectName) and
+num:      if (State = stObjectName) and
              ExpectStandard then
             exit;
           // '0123' excluded by JSON, but not here
@@ -2821,26 +2853,26 @@ begin
           break;
         end;
       jtNullFirstChar: // 'n'
-        if (PInteger(P)^ = NULL_LOW) and
+nul:    if (PInteger(P)^ = NULL_LOW) and
            (jcEndOfJsonValueField in JsonSet[P[4]]) then // #0#9#10#13 ,}]
           inc(P, 3)
         else
           goto ident;
       jtTrueFirstChar: // 't'
-        if (PInteger(P)^ = TRUE_LOW) and
+tru:    if (PInteger(P)^ = TRUE_LOW) and
            (jcEndOfJsonValueField in JsonSet[P[4]]) then // #0#9#10#13 ,}]
           inc(P, 3)
         else
           goto ident;
       jtFalseFirstChar: // 'f'
-        if (PInteger(P + 1)^ = FALSE_LOW2) and
+fal:    if (PInteger(P + 1)^ = FALSE_LOW2) and
            (jcEndOfJsonValueField in JsonSet[P[5]]) then // #0#9#10#13 ,}]
           inc(P, 4)
         else
           goto ident;
       jtObjectStart: // {
         begin
-          n := StackCount;
+obj:      n := StackCount;
           if (State = stObjectName) or
              (n > high(Stack)) then
             exit; // too many nested documents
@@ -2852,7 +2884,7 @@ begin
         end;
       jtArrayStart: // [
         begin
-          n := StackCount;
+arr:      n := StackCount;
           if (State = stObjectName) or
              (n > high(Stack)) then
             exit; // too many nested documents
@@ -2864,7 +2896,7 @@ begin
         end;
       jtObjectStop: // }
         begin
-          if State = stValue then
+objstop:  if State = stValue then
             exit;
 stop:     n := StackCount;
           if n = 0 then
@@ -2876,7 +2908,7 @@ stop:     n := StackCount;
             inc(RootCount);
         end;
       jtArrayStop: // ]
-        if State <> stValue then
+arrstop: if State <> stValue then
           exit
         else
           goto stop;
@@ -2890,7 +2922,7 @@ assign:   if State <> stObjectName then
         end;
       jtComma: // ,
         begin
-          if State = stObjectName then
+comma:    if State = stObjectName then
             exit;
           dec(State, ord(State = stObjectValue)); // branchless update
           if StackCount = 1 then
@@ -2986,10 +3018,80 @@ ident:    if ExpectStandard then
           end;
         end;
       jtEndOfBuffer: // #0
-        if StackCount <> 0 then
+eob:    if StackCount <> 0 then
           exit // unclosed array or object
         else
           break; // return #0
+      // strict mode only: validate the separators, then process the token
+      jtStrictDoubleQuote:
+        begin
+          if State <> stObjectName then
+          begin
+            if not StrictValue then
+              exit;
+          end
+          else if Sep in [0, 2] then
+            Sep := 3 // object name
+          else
+            exit;
+          goto str;
+        end;
+      jtStrictValue: // '-', '0'..'9', 'n', 't', 'f'
+        begin
+          if not StrictValue then
+            exit; // e.g. missing comma
+          case P^ of
+            'n':
+              goto nul;
+            't':
+              goto tru;
+            'f':
+              goto fal;
+          else
+            goto num;
+          end;
+        end;
+      jtStrictOpen: // { [
+        begin
+          if not StrictValue then
+            exit;
+          Sep := 0; // for the new nested level
+          if P^ = '{' then
+            goto obj
+          else
+            goto arr;
+        end;
+      jtStrictClose: // } ]
+        begin
+          if Sep > 1 then
+            exit; // e.g. trailing comma, or missing value
+          Sep := 1; // the closed array/object is a value of its parent
+          if P^ = '}' then
+            goto objstop
+          else
+            goto arrstop;
+        end;
+      jtStrictAssign: // :
+        begin
+          if Sep <> 3 then
+            exit; // no object name
+          Sep := 4;
+          goto assign;
+        end;
+      jtStrictComma: // ,
+        begin
+          if Sep <> 1 then
+            exit; // e.g. leading or double comma
+          Sep := 2;
+          goto comma;
+        end;
+      jtStrictEnd: // #0
+        begin
+          if (StackCount = 0) and
+             (Sep = 0) then
+            exit; // no value at all
+          goto eob;
+        end;
     else
       exit; // paranoid (every and each TJsonToken should be handled above)
     end;
@@ -4424,6 +4526,7 @@ begin
   result := nil; // to notify unexpected end
   if NumberOfItemsToJump <> 0 then
     repeat
+      parser.Sep := 0; // strict mode: each GotoEnd() call parses a new item
       P := parser.GotoEnd(P);
       if P = nil then
         exit;
@@ -11846,6 +11949,21 @@ begin
   t['#']  := jtHash;
   t['$']  := jtDollar;
   t['_']  := jtIdentifierFirstChar;
+  MoveFast(JSON_TOKENS, JSON_TOKENS_STRICT, SizeOf(JSON_TOKENS));
+  t := @JSON_TOKENS_STRICT; // to validate separators in TJsonParser.GotoEnd
+  t['"'] := jtStrictDoubleQuote;
+  FillCharFast(t['0'], 10, ord(jtStrictValue));
+  t['-'] := jtStrictValue;
+  t['n'] := jtStrictValue;
+  t['t'] := jtStrictValue;
+  t['f'] := jtStrictValue;
+  t['{'] := jtStrictOpen;
+  t['['] := jtStrictOpen;
+  t['}'] := jtStrictClose;
+  t[']'] := jtStrictClose;
+  t[':'] := jtStrictAssign;
+  t[','] := jtStrictComma;
+  t[#0]  := jtStrictEnd;
   // initialize JSON serialization
   Rtti.GlobalClass := TRttiJson; // will ensure Rtti.Count = 0
   // now we can register some local type alias to be found by name or ASAP

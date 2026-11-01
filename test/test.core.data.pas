@@ -3781,7 +3781,39 @@ begin
     check(not IsValidJson(RawUtf8OfChar('[', 2000), strict));
     // some false positive content (fast but not perfect)
     check(IsValidJson('{"123":123.4e1.0}', strict)); 
-    check(IsValidJson('[ -01001, ,- , , ,42.e]', strict));
+    check(IsValidJson('[ -01001, - ,42.e]', strict)); // numbers are guessed
+    check(IsValidJson('[ -01001, ,- , , ,42.e]', strict) = not strict);
+    // strict mode validates the separators of arrays and objects
+    check(IsValidJson('{"a":[1,{}],"b":{"c":[{"d":null},[]]}}', strict));
+    check(IsValidJson(' [ 1 , [ ] , { } ] ', strict));
+    check(IsValidJson('[1 2]', strict) = not strict);
+    check(IsValidJson('[,1]', strict) = not strict);
+    check(IsValidJson('[1,]', strict) = not strict);
+    check(IsValidJson('[1,,2]', strict) = not strict);
+    check(IsValidJson('[[1] [2]]', strict) = not strict);
+    check(IsValidJson('["a" "b"]', strict) = not strict);
+    check(IsValidJson('{"a":1,}', strict) = not strict);
+    check(IsValidJson('{"a":[1],}', strict) = not strict);
+    check(IsValidJson('{"a":}', strict) = not strict);
+    check(IsValidJson('{"a"}', strict) = not strict);
+    check(IsValidJson('{"a":1 2}', strict) = not strict);
+    check(IsValidJson('{"a" "b":1}', strict) = not strict);
+    check(IsValidJson('{:1}', strict) = not strict);
+    check(IsValidJson(' ', strict) = not strict); // no value at all
+    // other functions using the strict parser
+    U := '1,"two",[3,4],{"five":5},null';
+    check(IdemPChar(GotoNextJsonItem(pointer(U), 4, nil, nil, strict),
+      'NULL'), 'GotoNextJsonItem');
+    U := '1,[2,3],{"a":4}]';
+    CheckEqual(JsonArrayCount(pointer(U), nil, strict), 3);
+    U := '1,,2]';
+    CheckEqual(JsonArrayCount(pointer(U), nil, strict), ord(not strict) * 3);
+    U := '"a":1,"b":[2,3]}';
+    CheckEqual(JsonObjectPropCount(pointer(U), nil, strict), 2);
+    U := '"a":1,}';
+    CheckEqual(JsonObjectPropCount(pointer(U), nil, strict), ord(not strict) * 2);
+    U := '[1 2]';
+    check((GotoEndJsonItemStrict(pointer(U)) = nil), 'GotoEndJsonItemStrict');
   end;
   C2 := TCollTst.Create;
   Coll := TCollTst.Create;
