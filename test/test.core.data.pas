@@ -9108,7 +9108,7 @@ type
 
 const
   // golden cases, covering the I/O matrix of spec-yaml-support.md
-  GOLDEN: array[0..46] of TYamlGoldenCase = (
+  GOLDEN: array[0..58] of TYamlGoldenCase = (
     (Name: 'empty-flow-map';
      Yaml: '{}';
      ExpectedJson: '{}'),
@@ -9233,12 +9233,12 @@ const
      Yaml: 'k: |2'#10'      line1'#10'    line2';
      ExpectedJson: '{"k":"    line1\n  line2\n"}'),
     (Name: 'folded-explicit-indent';
-     // ">2" sibling of "|2" for folded style: same indent rule applies and
-     // line-break -> space folding still works. After stripping blockIndent=2,
-     // line1 is "    one" (4 spaces) and line2 is "  two" (2 spaces); folding
-     // injects a single space between them, yielding 3 spaces mid-output.
+     // ">2" sibling of "|2" for folded style: same indent rule applies.
+     // After stripping blockIndent=2, line1 is "    one" (4 spaces) and line2
+     // is "  two" (2 spaces): both are more-indented lines, so per YAML 1.2
+     // #8.1.3 the line break between them is preserved, not folded
      Yaml: 'k: >2'#10'      one'#10'    two';
-     ExpectedJson: '{"k":"    one   two\n"}'),
+     ExpectedJson: '{"k":"    one\n  two\n"}'),
     (Name: 'explicit-indent-varying-depth';
      // real GitHub REST octocat shape: content lines vary from deeper
      // to shallower but all >= parent+2; auto-detect would truncate at
@@ -9288,6 +9288,49 @@ const
     (Name: 'merge-key-escaped';
      Yaml: 'd: &d {"t\"ab": 2, k: 3}'#10'e:'#10'  <<: *d'#10'  "t\"ab": 9';
      ExpectedJson: '{"d":{"t\"ab":2,"k":3},"e":{"t\"ab":9,"k":3}}'),
+    (Name: 'literal-inner-blank-lines';
+     // YAML 1.2 #8.1.2: literal style keeps all line breaks
+     Yaml: 'k: |'#10'  a'#10#10'  b'#10#10#10'  c';
+     ExpectedJson: '{"k":"a\n\nb\n\n\nc\n"}'),
+    (Name: 'folded-more-indented';
+     // YAML 1.2 #8.1.3: more-indented lines are not folded
+     Yaml: 'k: >'#10'  a'#10'  b'#10#10'  c'#10'    code'#10'  d';
+     ExpectedJson: '{"k":"a b\nc\n  code\nd\n"}'),
+    (Name: 'block-keep-trailing-lines';
+     Yaml: 'k: |+'#10'  a'#10#10'n: 1';
+     ExpectedJson: '{"k":"a\n\n","n":1}'),
+    (Name: 'block-empty';
+     Yaml: 'k: |'#10'n: 1';
+     ExpectedJson: '{"k":"","n":1}'),
+    (Name: 'block-leading-blank-and-hash';
+     // a "#" line is content, not a comment, within a block scalar
+     Yaml: 'k: |'#10#10'  # text';
+     ExpectedJson: '{"k":"\n# text\n"}'),
+    (Name: 'plain-blank-line';
+     // YAML 1.2 #6.5: an empty line in a plain scalar is a line feed
+     Yaml: 'k: a'#10#10'  b'#10'n: 1';
+     ExpectedJson: '{"k":"a\nb","n":1}'),
+    (Name: 'quoted-blank-line';
+     Yaml: 'k: "a'#10#10'  b"'#10'j: ''c'#10#10'  d''';
+     ExpectedJson: '{"k":"a\nb","j":"c\nd"}'),
+    (Name: 'double-quoted-yaml-escapes';
+     // YAML 1.2 #5.7 escapes are a superset of the JSON escapes
+     Yaml: '"k\x41": "\x41\x22\x5c\ \/\tB"';
+     ExpectedJson: '{"kA":"A\"\\ /\tB"}'),
+    (Name: 'core-schema-bool';
+     // YAML 1.2 #10.3.2: true|True|TRUE|false|False|FALSE
+     Yaml: 'a: True'#10'b: FALSE'#10'c: Tom'#10'd: [False, TRUE]';
+     ExpectedJson: '{"a":true,"b":false,"c":"Tom","d":[false,true]}'),
+    (Name: 'core-schema-float';
+     Yaml: 'a: .5'#10'b: +1.5'#10'c: 1.'#10'd: -.5e3'#10'e: 01.5'#10'f: 1.2.3';
+     ExpectedJson: '{"a":0.5,"b":1.5,"c":1,"d":-500,"e":1.5,"f":"1.2.3"}'),
+    (Name: 'core-schema-inf-nan';
+     // as mORMot serializes such double values in JSON
+     Yaml: 'a: .inf'#10'b: -.Inf'#10'c: .NaN'#10'd: -.nan';
+     ExpectedJson: '{"a":"Infinity","b":"-Infinity","c":"NaN","d":"-.nan"}'),
+    (Name: 'flow-quoted-before-separator';
+     Yaml: '{k: "a", j: [''b'', "c"]}';
+     ExpectedJson: '{"k":"a","j":["b","c"]}'),
     (Name: 'flow-quoted-double-seq';
      // regression: SkipQuoted() already advances past the ending quote
      Yaml: 'k: ["a", "b"]';
@@ -9308,7 +9351,13 @@ const
      ExpectedJson: '{"k":["it''s","x\"y"]}')
   );
 
-  ERRORS: array[0..24] of TYamlGoldenCase = (
+  ERRORS: array[0..26] of TYamlGoldenCase = (
+    (Name: 'invalid-escape';
+     Yaml: 'a: "\q"';
+     ExpectedJson: ''),
+    (Name: 'invalid-hex-escape';
+     Yaml: 'a: "\xZZ"';
+     ExpectedJson: ''),
     (Name: 'anchor-on-flow-key';
      Yaml: 'a: {&ref k: 1}';
      ExpectedJson: ''),
@@ -9435,6 +9484,9 @@ begin
   // "" keys are not supported by TDocVariant, but should be merged as JSON
   CheckEqual(YamlToJson('d: &d {"": 1, k: 3}'#10'e:'#10'  <<: *d'#10'  "": 0'),
     '{"d":{"":1,"k":3},"e":{"":0,"k":3}}', 'merge void key');
+  // non-ASCII and control characters from YAML escapes
+  CheckEqual(YamlToJson('a: "\U0001F600\N\0\e"'),
+    '{"a":"'#$F0#$9F#$98#$80#$C2#$85'\u0000\u001B"}', 'yaml escapes');
 end;
 
 procedure TTestCoreProcess.YamlRoundtrip;
