@@ -9667,7 +9667,47 @@ begin
     YamlExpectRaise(' for python tag', 'a: !!python/object/apply:os.system ["id"]');
     YamlExpectRaise(' for java tag', '!!javax.script.ScriptEngineManager ' +
       '[!!java.net.URLClassLoader [[!!java.net.URL ["http://x/"]]]]');
-    // 4. linear time for many anchors / aliases and big merges (was O(n^2))
+    // 4. YamlRejectDuplicateKeys: TDocVariantData returns the first value,
+    // whereas most other parsers return the last - a parser differential
+    CheckEqual(YamlToJson('admin: false'#10'admin: true'),
+      '{"admin":false,"admin":true}', 'duplicates allowed by default');
+    YamlRejectDuplicateKeys := true;
+    try
+      YamlExpectRaise(' for duplicated key', 'admin: false'#10'admin: true');
+      YamlExpectRaise(' for duplicated quoted key',
+        'admin: false'#10'"admin": true');
+      YamlExpectRaise(' for duplicated escaped key',
+        'admin: false'#10'"\x61dmin": true');
+      YamlExpectRaise(' for duplicated flow key', '{admin: false, admin: true}');
+      YamlExpectRaise(' for duplicated implicit key', '- a: 1'#10'  a: 2');
+      CheckEqual(YamlToJson('a: {x: 1}'#10'b:'#10'  x: 2'),
+        '{"a":{"x":1},"b":{"x":2}}', 'same key in two mappings');
+      CheckEqual(YamlToJson('d: &d {k: 1, j: 2}'#10'e:'#10'  <<: *d'#10'  k: 9'),
+        '{"d":{"k":1,"j":2},"e":{"k":9,"j":2}}', 'merge override');
+      // big mappings switch from linear search to a hash table
+      y := '';
+      for i := 1 to 40 do
+        Append(y, FormatUtf8('k%: %'#10, [i, i]));
+      YamlToVariant(y, doc);
+      CheckEqual(doc.Count, 40, 'big mapping');
+      YamlExpectRaise(' for duplicated key in big mapping', y + 'k7: 0');
+      w := TTextWriter.CreateOwnedStream;
+      try
+        for i := 1 to 100000 do
+          w.Add('k%: %'#10, [i, i]);
+        w.SetText(y);
+      finally
+        w.Free;
+      end;
+      start := GetTickCount64;
+      YamlToVariant(y, doc);
+      start := GetTickCount64 - start;
+      CheckEqual(doc.Count, 100000, 'huge mapping');
+      CheckUtf8(start < 2000, 'O(n) duplicated keys detection: %ms', [start]);
+    finally
+      YamlRejectDuplicateKeys := false;
+    end;
+    // 5. linear time for many anchors / aliases and big merges (was O(n^2))
     w := TTextWriter.CreateOwnedStream;
     try
       for i := 1 to 30000 do
@@ -9692,7 +9732,7 @@ begin
     CheckEqual(doc.O['dst']^.Count, 60000, 'merged count');
     CheckEqual(doc.O['dst']^.I['k30000'], 30000, 'merged value');
     CheckUtf8(start < 2000, 'O(n) anchors and merges: %ms', [start]);
-    // 5. deterministic mini-fuzzer over the golden cases: any input should
+    // 6. deterministic mini-fuzzer over the golden cases: any input should
     // generate valid JSON or raise EYamlException - nothing else
     seed := 2463534242;
     ok := 0;
