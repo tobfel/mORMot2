@@ -9734,9 +9734,14 @@ begin
       '[!!java.net.URLClassLoader [[!!java.net.URL ["http://x/"]]]]');
     // 4. YamlRejectDuplicateKeys: TDocVariantData returns the first value,
     // whereas most other parsers return the last - a parser differential
-    CheckEqual(YamlToJson('admin: false'#10'admin: true'),
-      '{"admin":false,"admin":true}', 'duplicates allowed by default');
-    YamlRejectDuplicateKeys := true;
+    Check(YamlRejectDuplicateKeys, 'rejected by default');
+    YamlRejectDuplicateKeys := false;
+    try
+      CheckEqual(YamlToJson('admin: false'#10'admin: true'),
+        '{"admin":false,"admin":true}', 'duplicates allowed if disabled');
+    finally
+      YamlRejectDuplicateKeys := true;
+    end;
     try
       YamlExpectRaise(' for duplicated key', 'admin: false'#10'admin: true');
       YamlExpectRaise(' for duplicated quoted key',
@@ -9770,7 +9775,7 @@ begin
       CheckEqual(doc.Count, 100000, 'huge mapping');
       CheckUtf8(start < 2000, 'O(n) duplicated keys detection: %ms', [start]);
     finally
-      YamlRejectDuplicateKeys := false;
+      YamlRejectDuplicateKeys := true;
     end;
     // 5. linear time for many anchors / aliases and big merges (was O(n^2))
     w := TTextWriter.CreateOwnedStream;

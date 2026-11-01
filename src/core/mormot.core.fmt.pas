@@ -680,13 +680,15 @@ var
   // - protect against "billion laughs" exponential expansion of nested aliases
   YamlMaxAliasSize: Int64 = 64 shl 20;
 
-  /// set to true to raise EYamlException on any duplicated mapping key
+  /// raise EYamlException on any duplicated mapping key
   // - YAML 1.2 requires unique keys, but TDocVariantData would keep both
   // and return the first value, whereas most other parsers return the last:
-  // set this option e.g. if the same YAML is validated by another library
+  // this parser differential may be abused, e.g. if the same YAML is
+  // validated by another library
   // - keys overridden via "<<" merge keys are never considered duplicates
-  // - disabled by default, to avoid the hashing cost of each mapping key
-  YamlRejectDuplicateKeys: boolean = false;
+  // - enabled by default for safety: set to false to accept duplicated keys
+  // and save about 8% of parsing time
+  YamlRejectDuplicateKeys: boolean = true;
 
 
 { low-level functions which may be handy in some scenarios }
