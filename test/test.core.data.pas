@@ -9108,7 +9108,7 @@ type
 
 const
   // golden cases, covering the I/O matrix of spec-yaml-support.md
-  GOLDEN: array[0..58] of TYamlGoldenCase = (
+  GOLDEN: array[0..62] of TYamlGoldenCase = (
     (Name: 'empty-flow-map';
      Yaml: '{}';
      ExpectedJson: '{}'),
@@ -9331,6 +9331,21 @@ const
     (Name: 'flow-quoted-before-separator';
      Yaml: '{k: "a", j: [''b'', "c"]}';
      ExpectedJson: '{"k":"a","j":["b","c"]}'),
+    (Name: 'flow-plain-with-quotes';
+     // a quoted scalar starts a node: mid-scalar quotes are plain text
+     Yaml: 'a: [it''s, x"y]'#10'b: {k: it''s}';
+     ExpectedJson: '{"a":["it''s","x\"y"],"b":{"k":"it''s"}}'),
+    (Name: 'flow-multi-line';
+     // YAML 1.2 #7.4: flow collections may span several lines
+     Yaml: 'a: [1,'#10'  2]'#10'b: {x: 1,'#10'  y: 2}'#10'c: ok';
+     ExpectedJson: '{"a":[1,2],"b":{"x":1,"y":2},"c":"ok"}'),
+    (Name: 'flow-multi-line-comments-quotes';
+     Yaml: 'a: ['#10'  1, # one'#10'  # comment'#10#10'  "two, ]",'#10 +
+           '  {k: [x,'#10'      y]}'#10']'#10'b: ok';
+     ExpectedJson: '{"a":[1,"two, ]",{"k":["x","y"]}],"b":"ok"}'),
+    (Name: 'flow-multi-line-in-seq';
+     Yaml: '- [a,'#10'   b]'#10'- &x {c: "multi'#10'    line"}'#10'- *x';
+     ExpectedJson: '[["a","b"],{"c":"multi line"},{"c":"multi line"}]'),
     (Name: 'flow-quoted-double-seq';
      // regression: SkipQuoted() already advances past the ending quote
      Yaml: 'k: ["a", "b"]';
@@ -9351,7 +9366,10 @@ const
      ExpectedJson: '{"k":["it''s","x\"y"]}')
   );
 
-  ERRORS: array[0..26] of TYamlGoldenCase = (
+  ERRORS: array[0..27] of TYamlGoldenCase = (
+    (Name: 'flow-multi-line-unterminated';
+     Yaml: 'a: [1,'#10'  2'#10'b: 3';
+     ExpectedJson: ''),
     (Name: 'invalid-escape';
      Yaml: 'a: "\q"';
      ExpectedJson: ''),

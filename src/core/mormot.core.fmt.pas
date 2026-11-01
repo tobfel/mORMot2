@@ -3110,7 +3110,9 @@ end;
 
   - plain / double-quoted / single-quoted scalars with core-schema type
     inference (null / bool / int / float / string)
-  - block and flow mappings and sequences
+  - block and flow mappings and sequences, flow collections possibly
+    spanning several lines
+  - double-quoted scalars with all YAML 1.2 escapes (e.g. \x41 or \U0001F600)
   - literal (|) and folded (>) block scalars with strip/clip/keep chomping
   - comments (# to end of line) outside quoted scalars
   - &anchor and *alias nodes, expanded as JSON copies of the anchored node
@@ -3388,11 +3390,12 @@ type
     ynValue,
     ynFlow);
 
-  // the key names of a block mapping, as needed by "<<" merge keys
+  // the key names and "<<" merge values of a block mapping
   TYamlMapNames = record
-    Names: TRawUtf8DynArray; // never void, for FindNonVoidRawUtf8()
-    Count: integer;
-    HasVoid: boolean;        // "": value
+    Names: TRawUtf8DynArray;  // never void, for FindNonVoidRawUtf8()
+    Merges: TRawUtf8DynArray; // JSON of each "<<" value
+    Count, MergeCount, MergeIdx: integer;
+    HasVoid: boolean;         // "": value
   end;
 
   TYamlToJson = class
@@ -3403,7 +3406,9 @@ type
     fDepth, fMaxDepth: integer;
     fAnchorCount: integer;
     fHasMerge: boolean;
+    fMapLevel: integer;
     fAliasSize: Int64;
+    fMaps: array of TYamlMapNames; // reused per block mapping nesting level
     fOut: TJsonWriter;
     fAnchorName, fAnchorJson: TRawUtf8DynArray;
     procedure Error(LineIdx: integer; const Msg: ShortString);
@@ -3417,6 +3422,7 @@ type
     procedure CheckUnsupportedScalar(LineIdx: integer; p: PUtf8Char);
     procedure MergeMultilineQuoted(var rest: RawUtf8; firstLineIdx: integer);
     procedure FoldPlainScalar(var rest: RawUtf8; MapIndent: integer);
+    procedure JoinMultilineFlow(LineIdx: integer);
     procedure ParseValue(MinIndent: integer);
     procedure ParseEntryValue(var Rest: RawUtf8; Indent, LineIdx: integer;
       Kind: TYamlNodeKind);
@@ -3820,7 +3826,8 @@ begin
   else if IsBooleanJson(pointer(s)) or
           IsNumberJson(pointer(s)) then
     fOut.AddString(s)                       // valid JSON number or boolean
-  else if not EmitCoreSchema(s) then        // e.g. True .5 .inf
+  else if not (s[1] in ['T', 'F', '.', '-', '+', '0' .. '9']) or
+          not EmitCoreSchema(s) then        // e.g. True .5 .inf
     fOut.AddJsonString(s);                  // as JSON "string"
 end;
 
@@ -4140,41 +4147,38 @@ begin
     buf.Done(rest);
 end;
 
-function YamlSplitMapEntry(const Line: RawUtf8; out Key, Rest: RawUtf8): boolean;
+function YamlSplitMapEntry(const Line: RawUtf8; var Key, Rest: RawUtf8): boolean;
 var
   keyEnd: PtrInt;
 begin
+  // no "out" parameters to avoid any needless finalization in the caller
   keyEnd := YamlLineKeyEnd(Line);
   result := keyEnd >= 0;
   if not result then
     exit;
   TrimRightCopy(Line, 1, keyEnd, Key);
   if keyEnd + 1 < length(Line) then
-    TrimLeftCopy(Line, keyEnd + 2, MaxInt, Rest);
+    TrimLeftCopy(Line, keyEnd + 2, MaxInt, Rest)
+  else
+    FastAssignNew(Rest);
 end;
 
-procedure YamlKeyName(const K: RawUtf8; var Name: RawUtf8);
+function YamlHasMergeKey(const Yaml: RawUtf8): boolean;
 var
-  tmp: RawUtf8;
-  p: PUtf8Char;
+  p, s: PUtf8Char;
 begin
-  // unquoted key name, as stored in the JSON output - for "<<" merge lookup
-  if K <> '' then
-    case K[1] of
-      '"':
-        begin
-          FastSetString(tmp, pointer(K), length(K)); // decoded in-place
-          p := pointer(tmp);
-          GetJsonItemAsRawUtf8(p, Name);
-          exit;
-        end;
-      '''':
-        begin
-          UnQuoteSqlStringVar(pointer(K), Name);
-          exit;
-        end;
-    end;
-  Name := K; // most common case: plain key, with no allocation
+  // fast search for any "<<" in the input, using SSE2 asm on x86_64
+  result := true;
+  p := pointer(Yaml);
+  s := PosChar(p, length(Yaml), '<');
+  while s <> nil do
+  begin
+    if s[1] = '<' then
+      exit;
+    inc(s);
+    s := PosChar(s, length(Yaml) - (s - p), '<');
+  end;
+  result := false;
 end;
 
 function YamlNodeNameEnd(p: PUtf8Char): PUtf8Char;
@@ -4204,6 +4208,32 @@ begin
     Names.HasVoid := true
   else
     AddRawUtf8(Names.Names, Names.Count, Name);
+end;
+
+procedure YamlAddKeyName(var Names: TYamlMapNames; const Key: RawUtf8);
+var
+  name: RawUtf8;
+  p: PUtf8Char;
+begin
+  // add the unquoted key name, as stored in the JSON output
+  if Key <> '' then
+    case Key[1] of
+      '"':
+        begin
+          FastSetString(name, pointer(Key), length(Key)); // decoded in-place
+          p := pointer(name);
+          GetJsonItemAsRawUtf8(p, name);
+          YamlAddName(Names, name);
+          exit;
+        end;
+      '''':
+        begin
+          UnQuoteSqlStringVar(pointer(Key), name);
+          YamlAddName(Names, name);
+          exit;
+        end;
+    end;
+  YamlAddName(Names, Key); // most common case: plain key
 end;
 
 procedure TYamlToJson.EmitAlias(const Alias: RawUtf8; LineIdx: integer);
@@ -4433,19 +4463,25 @@ end;
 procedure TYamlToJson.ParseBlockMap(Indent: integer; const FirstEntry: RawUtf8);
 var
   first: boolean;
-  lineIdx, mergeIdx, mergeCount, i: integer;
-  keyText, rest, name: RawUtf8;
-  merges: TRawUtf8DynArray;
-  names: TYamlMapNames;
+  lineIdx, level, i: integer;
+  keyText, rest: RawUtf8;
   line: PRawUtf8;
   c: PYamlLine;
 begin
   fOut.Add('{');
   first := true;
-  mergeIdx := 0;
-  mergeCount := 0;
-  names.Count := 0;
-  names.HasVoid := false;
+  level := -1;
+  if fHasMerge then
+  begin
+    // track key names and "<<" values with no local managed variable
+    level := fMapLevel;
+    inc(fMapLevel);
+    if level >= length(fMaps) then
+      SetLength(fMaps, NextGrow(level));
+    fMaps[level].Count := 0;
+    fMaps[level].MergeCount := 0;
+    fMaps[level].HasVoid := false;
+  end;
   line := nil;
   if FirstEntry <> '' then
     line := @FirstEntry; // from "- key: value" implicit mapping in a sequence
@@ -4462,20 +4498,18 @@ begin
       break;
     line := nil;
     lineIdx := fIdx;
-    if fHasMerge then
+    if level >= 0 then
       if keyText = '<<' then
       begin
         // YAML merge key: store the value JSON, and emit it at the end
-        mergeIdx := lineIdx;
-        AddRawUtf8(merges, mergeCount,
-          CaptureNode(rest, Indent, lineIdx, ynMapValue));
+        // (fMaps[] may be reallocated by any nested call)
+        rest := CaptureNode(rest, Indent, lineIdx, ynMapValue);
+        fMaps[level].MergeIdx := lineIdx;
+        AddRawUtf8(fMaps[level].Merges, fMaps[level].MergeCount, rest);
         continue;
       end
       else
-      begin
-        YamlKeyName(keyText, name);
-        YamlAddName(names, name);
-      end;
+        YamlAddKeyName(fMaps[level], keyText);
     if not first then
       fOut.AddDirect(',');
     first := false;
@@ -4483,8 +4517,13 @@ begin
     fOut.AddDirect(':');
     ParseEntryValue(rest, Indent, lineIdx, ynMapValue);
   until false;
-  for i := 0 to mergeCount - 1 do
-    EmitMerged(pointer(merges[i]), names, first, mergeIdx);
+  if level >= 0 then
+  begin
+    for i := 0 to fMaps[level].MergeCount - 1 do
+      EmitMerged(pointer(fMaps[level].Merges[i]), fMaps[level], first,
+        fMaps[level].MergeIdx);
+    dec(fMapLevel);
+  end;
   fOut.AddDirect('}');
 end;
 
@@ -4513,6 +4552,128 @@ begin
     dec(fDepth);
   until false;
   fOut.AddDirect(']');
+end;
+
+function YamlFlowScan(p: PUtf8Char; var Depth: integer;
+  var Quote, Prev: AnsiChar): PUtf8Char;
+var
+  b: PUtf8Char;
+  c: AnsiChar;
+begin
+  // return the end of the flow content in this line, i.e. after the closing
+  // bracket if Depth reached 0, or at any "# comment" or #0
+  result := p;
+  repeat
+    if Quote <> #0 then
+    begin
+      // within a quoted scalar, which may span several lines
+      repeat
+        c := result^;
+        if c = #0 then
+          exit
+        else if c = Quote then
+          if (c = '''') and
+             (result[1] = '''') then
+            inc(result) // '' escape
+          else
+            break
+        else if (c = '\') and
+                (Quote = '"') and
+                (result[1] <> #0) then
+          inc(result); // \" escape
+        inc(result);
+      until false;
+      Quote := #0;
+      inc(result); // skip ending quote
+    end;
+    while not (result^ in [#0, '"', '''', '[', ']', '{', '}', '#']) do
+      inc(result); // fast skip of most characters
+    c := result^;
+    case c of
+      #0:
+        break;
+      '"',
+      '''',
+      '#':
+        begin
+          b := result - 1; // search previous non-blank char
+          while (b >= p) and
+                (b^ in [' ', #9]) do
+            dec(b);
+          if c = '#' then
+          begin
+            if (result = p) or
+               (b <> result - 1) then
+            begin
+              result := b + 1; // comment after white space
+              break;
+            end;
+          end
+          else if b >= p then
+          begin
+            if b^ in ['[', '{', ',', ':'] then
+              Quote := c; // a quoted scalar starts a node
+          end
+          else if Prev in [#0, '[', '{', ',', ':'] then
+            Quote := c;
+        end;
+      '[',
+      '{':
+        inc(Depth);
+      ']',
+      '}':
+        begin
+          dec(Depth);
+          if Depth = 0 then
+          begin
+            inc(result);
+            exit;
+          end;
+        end;
+    end;
+    inc(result);
+  until false;
+  if result <> p then
+    Prev := result[-1]; // lines are right-trimmed: last non-blank char
+end;
+
+procedure TYamlToJson.JoinMultilineFlow(LineIdx: integer);
+// YAML 1.2 #7.4: a flow collection may span several lines, whatever their
+// indentation: join them into the last line, and point fIdx to it
+var
+  depth: integer;
+  quote, prev: AnsiChar;
+  p, e: PUtf8Char;
+  joined: RawUtf8;
+  buf: TSynTempAdder;
+begin
+  depth := 0;
+  quote := #0;
+  prev := #0;
+  p := pointer(fLines[fIdx].Content);
+  e := YamlFlowScan(p, depth, quote, prev);
+  if depth = 0 then
+    exit; // most common case of a single-line flow collection
+  buf.Init;
+  try
+    buf.Add(p, e - p);
+    repeat
+      inc(fIdx);
+      if AtEnd then
+        Error(LineIdx, 'unterminated multi-line flow collection');
+      p := pointer(fLines[fIdx].Content);
+      if p = nil then
+        continue; // ignore empty lines
+      e := YamlFlowScan(p, depth, quote, prev);
+      if e = p then
+        continue; // ignore comment lines
+      buf.Add(' '); // line break folded into a space
+      buf.Add(p, e - p);
+    until depth = 0;
+  finally
+    buf.Done(joined);
+  end;
+  fLines[fIdx].Content := joined;
 end;
 
 procedure TYamlToJson.ParseFlow(var p: PUtf8Char; LineIdx: integer);
@@ -4547,6 +4708,7 @@ begin
         break;
       '''',
       '"':
+        // a quoted scalar starts a node, e.g. [it's] is a plain scalar
         if result = p then
           result := SkipQuoted(LineIdx, result) - 1; // inc(result) below
       '{',
@@ -4729,8 +4891,9 @@ begin
     CheckUnsupportedScalar(lineIdx, pointer(c^.Content));
     if c^.Content[1] in ['{', '['] then
     begin
-      // single-line flow at this indent
-      p := pointer(c^.Content);
+      // flow at this indent, maybe on several lines
+      JoinMultilineFlow(lineIdx);
+      p := pointer(fLines[fIdx].Content);
       ParseFlow(p, lineIdx);
       inc(fIdx);
     end
@@ -4833,7 +4996,7 @@ var
 begin
   FillLines(Yaml);
   fIdx := 0;
-  fHasMerge := PosEx('<<', Yaml) <> 0; // record key names only if needed
+  fHasMerge := YamlHasMergeKey(Yaml); // record key names only if needed
   c := SkipBlankLines;
   if AtEnd then
   begin
