@@ -3437,6 +3437,8 @@ type
     procedure EmitFlowScalar(const Frag: RawUtf8; LineIdx: integer);
     procedure EmitScalarFragment(const Frag: RawUtf8; LineIdx: integer);
     procedure EmitKey(const K: RawUtf8; LineIdx: integer);
+    procedure EmitDoubleQuoted(const K: RawUtf8; LineIdx: integer);
+    function EmitCoreSchema(const S: RawUtf8): boolean;
     procedure EmitCollectBlockScalar(MinIndent, ExplicitIndent: integer;
       Folded, Chomp: AnsiChar);
     procedure EmitBlockScalar(const rest: RawUtf8; BaseIndent: integer);
@@ -3528,11 +3530,237 @@ begin
     Error(LineIdx, 'multi-document streams are not supported');
 end;
 
+const
+  // YAML double-quoted escapes which are also valid JSON escapes
+  YAML_JSON_ESCAPE = ['"', '\', '/', 'b', 'f', 'n', 'r', 't', 'u'];
+
+function YamlHexCode(p: PUtf8Char; Digits: integer; var Code: cardinal): boolean;
+var
+  b: byte;
+begin
+  result := false;
+  Code := 0;
+  repeat
+    b := ConvertHexToBin[p^];
+    if b = 255 then
+      exit;
+    Code := (Code shl 4) or b;
+    inc(p);
+    dec(Digits);
+  until Digits = 0;
+  result := true;
+end;
+
+procedure TYamlToJson.EmitDoubleQuoted(const K: RawUtf8; LineIdx: integer);
+var
+  p, e, s: PUtf8Char;
+  code: cardinal;
+  tmp: array[0..7] of AnsiChar;
+begin
+  p := pointer(K);
+  e := p + length(K) - 1; // ending quote
+  s := p + 1;
+  repeat
+    if s < e then
+      s := PosChar(s, e - s, '\') // use fast SSE2 asm on x86_64
+    else
+      s := nil;
+    if s = nil then
+    begin
+      fOut.AddString(K); // most common case: already JSON-escaped
+      exit;
+    end;
+    if not (s[1] in YAML_JSON_ESCAPE) then
+      break;
+    inc(s, 2);
+  until false;
+  // YAML 1.2 #5.7 escapes are a superset of the JSON escapes
+  fOut.Add('"');
+  inc(p);
+  repeat
+    s := p;
+    while (p < e) and
+          (p^ <> '\') do
+      inc(p);
+    fOut.AddNoJsonEscape(s, p - s);
+    if p >= e then
+      break;
+    inc(p); // p^ is the escaped char
+    case p^ of
+      '0':
+        code := 0;
+      'a':
+        code := 7;
+      'v':
+        code := 11;
+      'e':
+        code := 27;
+      ' ':
+        code := 32;
+      #9:
+        code := 9;
+      'N':
+        code := $85;
+      '_':
+        code := $a0;
+      'L':
+        code := $2028;
+      'P':
+        code := $2029;
+      'x':
+        if YamlHexCode(p + 1, 2, code) then
+          inc(p, 2)
+        else
+          code := $ffffffff;
+      'U':
+        if YamlHexCode(p + 1, 8, code) then
+          inc(p, 8)
+        else
+          code := $ffffffff;
+    else
+      if p^ in YAML_JSON_ESCAPE then
+      begin
+        fOut.Add('\', p^); // JSON compatible escape
+        inc(p);
+        continue;
+      end
+      else
+        code := $ffffffff;
+    end;
+    if code > $10ffff then
+      ErrorFmt(LineIdx, 'invalid escape in double-quoted scalar %', [K]);
+    inc(p);
+    if code < 32 then
+    begin
+      fOut.AddShorter('\u00');
+      fOut.AddByteToHex(code);
+    end
+    else
+      fOut.AddJsonEscape(@tmp, Ucs4ToUtf8(code, @tmp));
+  until p >= e;
+  fOut.Add('"');
+end;
+
+function TYamlToJson.EmitCoreSchema(const S: RawUtf8): boolean;
+var
+  p, int, frac, exp: PUtf8Char;
+  intLen, fracLen: PtrInt;
+  neg: boolean;
+begin
+  // YAML 1.2 #10.3.2 core schema values which are not valid JSON as such
+  result := false;
+  p := pointer(S);
+  case p^ of
+    'T':
+      begin
+        result := (S = 'True') or
+                  (S = 'TRUE');
+        if result then
+          fOut.Add(true);
+        exit;
+      end;
+    'F':
+      begin
+        result := (S = 'False') or
+                  (S = 'FALSE');
+        if result then
+          fOut.Add(false);
+        exit;
+      end;
+    '.':
+      if (S = '.nan') or
+         (S = '.NaN') or
+         (S = '.NAN') then
+      begin
+        fOut.AddShort(JSON_NAN[fnNan]); // as mORMot serializes NaN
+        result := true;
+        exit;
+      end;
+    '-',
+    '+',
+    '0' .. '9':
+      ;
+  else
+    exit; // most common case of a plain string
+  end;
+  // [-+]? ( \. [0-9]+ | [0-9]+ ( \. [0-9]* )? ) ( [eE] [-+]? [0-9]+ )?
+  neg := p^ = '-';
+  if p^ in ['-', '+'] then
+    inc(p);
+  if (StrComp(p, PAnsiChar('.inf')) = 0) or
+     (StrComp(p, PAnsiChar('.Inf')) = 0) or
+     (StrComp(p, PAnsiChar('.INF')) = 0) then
+  begin
+    if neg then
+      fOut.AddShort(JSON_NAN[fnNegInf])
+    else
+      fOut.AddShort(JSON_NAN[fnInf]);
+    result := true;
+    exit;
+  end;
+  int := p;
+  while p^ in ['0' .. '9'] do
+    inc(p);
+  intLen := p - int;
+  frac := nil;
+  fracLen := 0;
+  if p^ = '.' then
+  begin
+    inc(p);
+    frac := p;
+    while p^ in ['0' .. '9'] do
+      inc(p);
+    fracLen := p - frac;
+  end;
+  if intLen + fracLen = 0 then
+    exit;
+  exp := nil;
+  if p^ in ['e', 'E'] then
+  begin
+    exp := p + 1;
+    inc(p);
+    if p^ in ['-', '+'] then
+      inc(p);
+    if not (p^ in ['0' .. '9']) then
+      exit;
+    repeat
+      inc(p);
+    until not (p^ in ['0' .. '9']);
+  end;
+  if p^ <> #0 then
+    exit;
+  // emit as a valid JSON number, e.g. '+.5' as '0.5' or '01.e3' as '1e3'
+  if neg then
+    fOut.Add('-');
+  while (intLen > 1) and
+        (int^ = '0') do
+  begin
+    inc(int);
+    dec(intLen);
+  end;
+  if intLen = 0 then
+    fOut.Add('0')
+  else
+    fOut.AddNoJsonEscape(int, intLen);
+  if fracLen <> 0 then
+  begin
+    fOut.Add('.');
+    fOut.AddNoJsonEscape(frac, fracLen);
+  end;
+  if exp <> nil then
+  begin
+    fOut.Add('e');
+    fOut.AddNoJsonEscape(exp, p - exp);
+  end;
+  result := true;
+end;
+
 procedure TYamlToJson.EmitKey(const K: RawUtf8; LineIdx: integer);
 begin
   if K <> '' then
     case K[1] of
-      '"',
+      '"':
+        EmitDoubleQuoted(K, LineIdx);
       '''':
         begin
           // A quoted YAML scalar must be entirely consumed before JSON output.
@@ -3569,7 +3797,7 @@ begin
     '"',
     '''':
       begin
-        EmitKey(s);
+        EmitKey(s, LineIdx);
         exit;
       end;
     '*':
@@ -3591,7 +3819,7 @@ begin
   else if IsBooleanJson(pointer(s)) or
           IsNumberJson(pointer(s)) then
     fOut.AddString(s)                       // valid JSON number or boolean
-  else
+  else if not EmitCoreSchema(s) then        // e.g. True .5 .inf
     fOut.AddJsonString(s);                  // as JSON "string"
 end;
 
@@ -3611,39 +3839,53 @@ procedure TYamlToJson.EmitCollectBlockScalar(MinIndent, ExplicitIndent: integer;
   Folded, Chomp: AnsiChar);
 var
   blockIndent, blankRun: integer;
-  prevWasContent: boolean;
+  prevWasContent, more, prevMore: boolean;
   c: PYamlLine;
   buf: TSynTempAdder;
 begin
-  // skip leading blank lines; stop at the first non-blank line.
-  c := SkipBlankLines;
-  if ExplicitIndent > 0 then
+  // leading blank lines are part of the content (not comment lines)
+  blankRun := 0;
+  c := @fLines[fIdx];
+  while (fIdx < fCount) and
+        (c^.Content = '') do
   begin
-    // YAML 1.2 §8.1.1.1 explicit indent indicator: the content indent is
-    // fixed at parent_indent + ExplicitIndent, NOT auto-detected. MinIndent
-    // equals parent_indent + 1 at this point, so parent_indent = MinIndent-1
-    blockIndent := MinIndent - 1 + ExplicitIndent;
-    // if the first non-blank line is shallower than blockIndent, the block is
-    // empty (blockIndent reset to -1 so the existing "empty block" path below
-    // takes over)
-    if (fIdx >= fCount) or
-       (c^.Indent < blockIndent) then
-      blockIndent := -1;
-  end
-  else
-  begin
-    // detect block indent from the first non-blank line whose indent >= MinIndent
-    blockIndent := -1;
-    if c^.Indent >= MinIndent then
-      blockIndent := c^.Indent;
+    inc(blankRun);
+    inc(fIdx);
+    inc(c);
   end;
+  blockIndent := -1;
+  if fIdx < fCount then
+    if ExplicitIndent > 0 then
+    begin
+      // YAML 1.2 #8.1.1.1 explicit indent indicator: the content indent is
+      // fixed at parent_indent + ExplicitIndent, NOT auto-detected. MinIndent
+      // equals parent_indent + 1 at this point, so parent_indent = MinIndent-1
+      blockIndent := MinIndent - 1 + ExplicitIndent;
+      // if the first non-blank line is shallower than blockIndent, the block
+      // is empty
+      if c^.Indent < blockIndent then
+        blockIndent := -1;
+    end
+    else if c^.Indent >= MinIndent then
+      // detect block indent from the first non-blank line
+      blockIndent := c^.Indent;
   if blockIndent < 0 then
-    // empty block no chomping needed
+  begin
+    // empty block: only "keep" chomping would generate some line feeds
+    fOut.Add('"');
+    if Chomp = '+' then
+      while blankRun > 0 do
+      begin
+        fOut.AddShorter('\n');
+        dec(blankRun);
+      end;
+    fOut.Add('"');
     exit;
+  end;
   buf.Init;
   try
-    blankRun := 0;
     prevWasContent := false;
+    prevMore := false;
     while fIdx < fCount do
     begin
       if c^.Content = '' then
@@ -3655,50 +3897,35 @@ begin
       end;
       if c^.Indent < blockIndent then
         break;
-      // block content line: strip blockIndent prefix
-      if prevWasContent then
-        if blankRun = 0 then
-          buf.AddDirect(folded)
-        else
-          // preserve blank-line runs literally as \n * blankRun
-          buf.AddChars(#10, blankRun)
+      // YAML 1.2 #8.1.3: folding only applies between two non-indented lines
+      more := c^.Indent > blockIndent;
+      if not prevWasContent then
+        buf.AddChars(#10, blankRun)          // leading blank lines
+      else if Folded = #10 then
+        buf.AddChars(#10, blankRun + 1)      // literal: keep all line breaks
+      else if (blankRun = 0) and
+              not (more or prevMore) then
+        buf.Add(' ')                         // folded line break
       else
-        // leading blanks before first content: keep them
-        buf.AddChars(#10, blankRun);
+        // folded: blank lines are kept, but the line break is folded unless
+        // it is next to a more-indented line
+        buf.AddChars(#10, blankRun + ord(more or prevMore));
       buf.AddChars(' ', c^.Indent - blockIndent);
       buf.Add(c^.Content);
       prevWasContent := true;
+      prevMore := more;
       blankRun := 0;
       inc(fIdx);
       inc(c);
     end;
-    // apply chomping to the trailing content
+    // YAML 1.2 #8.1.1.2 chomping of the final line break and trailing lines
     case Chomp of
       '-':
-        // strip all trailing newlines
-        while (buf.Store.added > 0) and
-              (PUtf8Char(buf.Buffer)[buf.Store.added - 1] in [#13, #10]) do
-          dec(buf.Store.added);
+        ; // strip: no final line break
       '+':
-        // keep trailing newlines exactly; ensure at least one
-        if (buf.Store.added = 0) or
-           not (PUtf8Char(buf.Buffer)[buf.Store.added - 1] in [#13, #10]) then
-        begin
-          PUtf8Char(buf.Buffer)[buf.Store.added] := #10; // append
-          inc(buf.Store.added);
-        end;
-      else
-        // clip: collapse trailing newlines to a single one
-        while (buf.Store.added >= 2) and
-              (PUtf8Char(buf.Buffer)[buf.Store.added - 1] = #10) and
-              (PUtf8Char(buf.Buffer)[buf.Store.added - 2] = #10) do
-          dec(buf.Store.added);
-        if (buf.Store.added <= 0) or
-           (PUtf8Char(buf.Buffer)[buf.Store.added - 1] <> #10) then
-         begin
-           PUtf8Char(buf.Buffer)[buf.Store.added] := #10; // append
-           inc(buf.Store.added);
-         end;
+        buf.AddChars(#10, blankRun + 1); // keep: all trailing line breaks
+    else
+      buf.Add(#10); // clip: a single final line break
     end;
     fOut.AddJsonStringBuffer(buf.Buffer, buf.Store.added);
   finally
@@ -3798,6 +4025,7 @@ var
 
 var
   cur: PRawUtf8; // we need a temp value since = rest first
+  blank: integer;
   buf: TSynTempAdder;
 begin
   if rest = '' then
@@ -3814,17 +4042,30 @@ begin
     repeat
       // absorbed line break: drop the trailing '\' and emit no separator
       buf.Add(pointer(cur^), length(cur^) - ord(trailingEscape));
-      if not trailingEscape then
-        // folded line break -> single space (per YAML 1.2 §7.5)
-        buf.AddDirect(' ');
-      inc(fIdx);
-      if AtEnd then
-        Error(firstLineIdx, 'unterminated multi-line quoted scalar');
       // Content is already left-trimmed by SplitYamlLines via Indent metadata,
       // which is exactly the §7.5 requirement that leading ws is ignored
-      cur := @fLines[fIdx].Content;
-      if cur^ = '' then
-        continue;
+      blank := 0;
+      repeat
+        inc(fIdx);
+        if AtEnd then
+          Error(firstLineIdx, 'unterminated multi-line quoted scalar');
+        cur := @fLines[fIdx].Content;
+        if cur^ <> '' then
+          break;
+        inc(blank);
+      until false;
+      // YAML 1.2 #7.3: empty lines are kept as line feeds, whereas a single
+      // line break is folded into a space - unless it was escaped by '\'
+      if blank <> 0 then
+        repeat
+          if quote = '"' then
+            buf.AddShort('\n') // double-quoted content is JSON-escaped
+          else
+            buf.Add(#10);      // single-quoted: AddQuotedStringAsJson()
+          dec(blank);
+        until blank = 0
+      else if not trailingEscape then
+        buf.Add(' ');
       if ScanQuoteClosed(pointer(cur^), {skipOpeningQuote=}false) then
       begin
         // last line closes the scalar; include everything up to and past the
@@ -3843,36 +4084,59 @@ end;
 procedure TYamlToJson.FoldPlainScalar(var rest: RawUtf8; MapIndent: integer);
 // YAML 1.2 §6.5 plain scalar folding: a plain scalar value may continue
 // across lines that are indented strictly deeper than the map key. Each
-// line break folds to a single space. When invoked, fIdx must already point
-// at the first potential continuation line (the caller consumed the key
-// line). Advances fIdx past each folded line. A line break is NOT consumed
-// when the next line opens a nested structure (dash, flow, block-scalar
-// indicator, quoted scalar, or another "key: value" entry)
+// line break folds to a single space, and each empty line to a line feed.
+// When invoked, fIdx must already point at the first potential continuation
+// line (the caller consumed the key line). Advances fIdx past each folded
+// line. A line break is NOT consumed when the next line opens a nested
+// structure (dash, comment, or another "key: value" entry)
 var
   c: PYamlLine;
+  blank: integer;
+  buf: TSynTempAdder;
+  folded: boolean;
 begin
-  c := @fLines[fIdx];
-  while fIdx < fCount do
-  begin
-    // blank line terminates folding (paragraph break in plain scalars)
-    if (c^.Content = '') or
+  folded := false;
+  repeat
+    // empty lines are part of the scalar only if followed by some text
+    blank := 0;
+    c := @fLines[fIdx];
+    while (fIdx + blank < fCount) and
+          (c^.Content = '') do
+    begin
+      inc(blank);
+      inc(c);
+    end;
+    if (fIdx + blank >= fCount) or
     // sibling or outer-scope line is not part of the folded scalar
        (c^.Indent <= MapIndent) or
+    // a comment line ends the plain scalar
+       (c^.Content[1] = '#') or
     // a real "- " dash item at the continuation indent starts a new seq entry
        YamlDashLine(pointer(c^.Content)) or
     // a new "key:" line (quoted or plain) is a nested map, not continuation;
     // LineKeyEnd handles both "foo:" and '"foo":' forms
        (YamlLineKeyEnd(c^.Content) >= 0) then
-      exit;
-    // otherwise it's plain-scalar text; fold with a single space per §6.5.
+      break;
+    // otherwise it's plain-scalar text; fold it per §6.5.
     // once we are continuing a plain scalar, indicator chars at line start
     // (", ', {, [, |, >) are just literal text - the GitHub REST spec embeds
     // markdown ("[List selected ...](https://...)") and quoted phrases (e.g.
     // "My TEam Name") mid-description
-    Append(rest, ' ', c^.Content);
-    inc(fIdx);
-    inc(c);
-  end;
+    if not folded then
+    begin
+      buf.Init;
+      buf.Add(rest);
+      folded := true;
+    end;
+    if blank = 0 then
+      buf.Add(' ')
+    else
+      buf.AddChars(#10, blank);
+    buf.Add(c^.Content);
+    inc(fIdx, blank + 1);
+  until false;
+  if folded then
+    buf.Done(rest);
 end;
 
 function YamlSplitMapEntry(const Line: RawUtf8; out Key, Rest: RawUtf8): boolean;
@@ -4153,12 +4417,12 @@ begin
     ParseBlockMap(Indent + 2, Rest)
   else
   begin
-    // YAML 1.2 �7.5: a quoted scalar may span multiple lines
+    // YAML 1.2 §7.5: a quoted scalar may span multiple lines
     if Rest[1] in ['"', ''''] then
       MergeMultilineQuoted(Rest, LineIdx);
     CheckUnsupportedScalar(LineIdx, pointer(Rest));
     inc(fIdx); // consume the key line (or the quoted-scalar close line)
-    // YAML 1.2 �6.5: plain scalar may fold across indented lines
+    // YAML 1.2 §6.5: plain scalar may fold across indented lines
     if not (Rest[1] in ['"', '''']) then
       FoldPlainScalar(Rest, Indent);
     EmitScalarFragment(Rest, LineIdx);
@@ -4214,7 +4478,7 @@ begin
     if not first then
       fOut.AddDirect(',');
     first := false;
-    EmitKey(keyText);
+    EmitKey(keyText, lineIdx);
     fOut.AddDirect(':');
     ParseEntryValue(rest, Indent, lineIdx, ynMapValue);
   until false;
@@ -4277,7 +4541,7 @@ begin
         break;
       '''',
       '"':
-        result := SkipQuoted(LineIdx, result);
+        result := SkipQuoted(LineIdx, result) - 1; // inc(result) below
       '{',
       '[':
         inc(depth);
