@@ -680,6 +680,14 @@ var
   // - protect against "billion laughs" exponential expansion of nested aliases
   YamlMaxAliasSize: Int64 = 64 shl 20;
 
+  /// set to true to raise EYamlException on any duplicated mapping key
+  // - YAML 1.2 requires unique keys, but TDocVariantData would keep both
+  // and return the first value, whereas most other parsers return the last:
+  // set this option e.g. if the same YAML is validated by another library
+  // - keys overridden via "<<" merge keys are never considered duplicates
+  // - disabled by default, to avoid the hashing cost of each mapping key
+  YamlRejectDuplicateKeys: boolean = false;
+
 
 { low-level functions which may be handy in some scenarios }
 
@@ -3396,13 +3404,17 @@ type
     ynValue,
     ynFlow);
 
-  // the key names and "<<" merge values of a block mapping
+  // the key names and "<<" merge values of a mapping
+  // - allocated once per nesting level, so that Hash pointers are stable
   TYamlMapNames = record
-    Names: TRawUtf8DynArray;  // never void, for TDynArrayHashed
+    Names: TRawUtf8DynArray;  // never void, for FindNonVoidRawUtf8()
     Merges: TRawUtf8DynArray; // JSON of each "<<" value
     Count, MergeCount, MergeIdx: integer;
     HasVoid: boolean;         // "": value
+    Hashed: boolean;          // Hash is used for big mappings only
+    Hash: TDynArrayHashed;
   end;
+  PYamlMapNames = ^TYamlMapNames;
 
   TYamlToJson = class
   protected
@@ -3412,8 +3424,9 @@ type
     fDepth, fMaxDepth: integer;
     fHasMerge: boolean;
     fMapLevel: integer;
+    fCheckDup: boolean;
     fAliasSize: Int64;
-    fMaps: array of TYamlMapNames; // reused per block mapping nesting level
+    fMaps: array of PYamlMapNames; // reused per mapping nesting level
     fOut: TJsonWriter;
     fAnchors: TBinDictionary; // anchor name -> JSON, with O(1) lookup
     procedure Error(LineIdx: integer; const Msg: ShortString);
@@ -3438,9 +3451,13 @@ type
     function CaptureNode(var Rest: RawUtf8; Indent, LineIdx: integer;
       Kind: TYamlNodeKind): RawUtf8;
     procedure EmitAlias(const Alias: RawUtf8; LineIdx: integer);
-    procedure EmitMerges(var Names: TYamlMapNames; var First: boolean);
-    procedure EmitMerged(P: PUtf8Char; var Hash: TDynArrayHashed;
-      var Names: TYamlMapNames; var First: boolean);
+    procedure EmitMerges(Map: PYamlMapNames; var First: boolean);
+    procedure EmitMerged(P: PUtf8Char; Map: PYamlMapNames; var First: boolean);
+    function PushMap: PYamlMapNames;
+    procedure DecodeKey(const Key: RawUtf8; var Name: RawUtf8;
+      LineIdx: integer);
+    procedure AddKeyName(Map: PYamlMapNames; const Key: RawUtf8;
+      LineIdx: integer);
     procedure IncDepth(LineIdx: integer);
       {$ifdef HASINLINE} inline; {$endif}
     procedure DepthError(LineIdx: integer);
@@ -3475,9 +3492,14 @@ begin
 end;
 
 destructor TYamlToJson.Destroy;
+var
+  i: PtrInt;
 begin
   fOut.Free;
   fAnchors.Free;
+  for i := 0 to length(fMaps) - 1 do
+    if fMaps[i] <> nil then
+      Dispose(fMaps[i]);
   inherited Destroy;
 end;
 
@@ -4214,38 +4236,111 @@ begin
     inc(result);
 end;
 
-procedure YamlAddName(var Names: TYamlMapNames; const Name: RawUtf8);
+function YamlMapAddName(Map: PYamlMapNames; const Name: RawUtf8): boolean;
+var
+  i: PtrInt;
 begin
+  // return false if Name was already in Map^.Names[]
   if Name = '' then
-    Names.HasVoid := true
+  begin
+    result := not Map^.HasVoid; // "" is not a valid FindNonVoidRawUtf8() key
+    Map^.HasVoid := true;
+  end
+  else if Map^.Hashed then
+  begin
+    i := Map^.Hash.FindHashedForAdding(Name, result);
+    if result then
+      Map^.Names[i] := Name;
+  end
   else
-    AddRawUtf8(Names.Names, Names.Count, Name);
+  begin
+    // most mappings are small: fast linear search with no memory allocation
+    result := (Map^.Count = 0) or
+      (FindNonVoidRawUtf8(pointer(Map^.Names), pointer(Name), length(Name),
+         Map^.Count) < 0);
+    if not result then
+      exit;
+    AddRawUtf8(Map^.Names, Map^.Count, Name);
+    if Map^.Count >= 32 then
+    begin
+      // switch to O(1) hash lookup for big mappings - avoid O(n^2) DoS
+      Map^.Hash.ForceReHash;
+      Map^.Hashed := true;
+    end;
+  end;
 end;
 
-procedure YamlAddKeyName(var Names: TYamlMapNames; const Key: RawUtf8);
+function TYamlToJson.PushMap: PYamlMapNames;
 var
-  name: RawUtf8;
-  p: PUtf8Char;
+  level: PtrInt;
 begin
-  // add the unquoted key name, as stored in the JSON output
+  level := fMapLevel;
+  inc(fMapLevel);
+  if level >= length(fMaps) then
+    SetLength(fMaps, NextGrow(level));
+  result := fMaps[level];
+  if result = nil then
+  begin
+    New(result); // stable address, for result^.Hash
+    result^.Hash.InitSpecific(TypeInfo(TRawUtf8DynArray), result^.Names,
+      ptRawUtf8, @result^.Count);
+    fMaps[level] := result;
+  end;
+  result^.Count := 0;
+  result^.MergeCount := 0;
+  result^.HasVoid := false;
+  result^.Hashed := false;
+end;
+
+procedure TYamlToJson.DecodeKey(const Key: RawUtf8; var Name: RawUtf8;
+  LineIdx: integer);
+var
+  tmp: RawUtf8;
+  p: PUtf8Char;
+  saved: TJsonWriter;
+begin
+  // the unquoted key name, exactly as stored in the JSON output
   if Key <> '' then
     case Key[1] of
       '"':
         begin
-          FastSetString(name, pointer(Key), length(Key)); // decoded in-place
-          p := pointer(name);
-          GetJsonItemAsRawUtf8(p, name);
-          YamlAddName(Names, name);
+          if PosExChar('\', Key) = 0 then
+            FastSetString(tmp, pointer(Key), length(Key)) // decoded in-place
+          else
+          begin
+            // YAML escapes are a superset of the JSON escapes, e.g. "\x61"
+            saved := fOut;
+            fOut := TJsonWriter.CreateOwnedStream;
+            try
+              EmitDoubleQuoted(Key, LineIdx);
+              fOut.SetText(tmp);
+            finally
+              fOut.Free;
+              fOut := saved;
+            end;
+          end;
+          p := pointer(tmp);
+          GetJsonItemAsRawUtf8(p, Name);
           exit;
         end;
       '''':
         begin
-          UnQuoteSqlStringVar(pointer(Key), name);
-          YamlAddName(Names, name);
+          UnQuoteSqlStringVar(pointer(Key), Name);
           exit;
         end;
     end;
-  YamlAddName(Names, Key); // most common case: plain key
+  Name := Key; // most common case: plain key
+end;
+
+procedure TYamlToJson.AddKeyName(Map: PYamlMapNames; const Key: RawUtf8;
+  LineIdx: integer);
+var
+  name: RawUtf8;
+begin
+  DecodeKey(Key, name, LineIdx);
+  if not YamlMapAddName(Map, name) and
+     fCheckDup then
+    ErrorFmt(LineIdx, 'duplicated key %', [Key]);
 end;
 
 procedure TYamlToJson.EmitAlias(const Alias: RawUtf8; LineIdx: integer);
@@ -4342,28 +4437,19 @@ begin
   fOut.AddString(json);
 end;
 
-procedure TYamlToJson.EmitMerges(var Names: TYamlMapNames; var First: boolean);
+procedure TYamlToJson.EmitMerges(Map: PYamlMapNames; var First: boolean);
 var
-  hash: TDynArrayHashed;
-  i, n: PtrInt;
+  i: PtrInt;
 begin
-  // O(1) lookup of the explicit and previously merged key names
-  n := Names.Count;
-  hash.InitSpecific(TypeInfo(TRawUtf8DynArray), Names.Names, ptRawUtf8,
-    @Names.Count);
-  Names.Count := n; // was reset by TDynArray.Init
-  hash.ForceReHash;
-  for i := 0 to Names.MergeCount - 1 do
-    EmitMerged(pointer(Names.Merges[i]), hash, Names, First);
+  for i := 0 to Map^.MergeCount - 1 do
+    EmitMerged(pointer(Map^.Merges[i]), Map, First);
 end;
 
-procedure TYamlToJson.EmitMerged(P: PUtf8Char; var Hash: TDynArrayHashed;
-  var Names: TYamlMapNames; var First: boolean);
+procedure TYamlToJson.EmitMerged(P: PUtf8Char; Map: PYamlMapNames;
+  var First: boolean);
 var
   name, value: PUtf8Char;
   len: integer;
-  i: PtrInt;
-  added: boolean;
   n: RawUtf8;
 begin
   // P^ is the JSON of a "<<" value: a mapping, or a sequence of mappings
@@ -4377,12 +4463,12 @@ begin
       P := GotoEndJsonItem(P);
       if P = nil then
         break;
-      EmitMerged(value, Hash, Names, First); // first wins
+      EmitMerged(value, Map, First); // first wins
     until P^ <> ',';
     exit;
   end;
   if P^ <> '{' then
-    Error(Names.MergeIdx,
+    Error(Map^.MergeIdx,
       'merge key "<<" expects a mapping or a list of mappings');
   inc(P);
   if P^ <> '}' then
@@ -4395,19 +4481,8 @@ begin
       if P = nil then
         break;
       // YAML merge keys never override any explicit or previous merged key
-      if len = 0 then
-      begin
-        added := not Names.HasVoid; // "" is not a valid TDynArrayHashed key
-        Names.HasVoid := true;
-      end
-      else
-      begin
-        FastSetString(n, name, len);
-        i := Hash.FindHashedForAdding(n, added);
-        if added then
-          Names.Names[i] := n;
-      end;
-      if added then
+      FastSetString(n, name, len);
+      if YamlMapAddName(Map, n) then
       begin
         if not First then
           fOut.AddDirect(',');
@@ -4513,25 +4588,18 @@ end;
 procedure TYamlToJson.ParseBlockMap(Indent: integer; const FirstEntry: RawUtf8);
 var
   first: boolean;
-  lineIdx, level: integer;
+  lineIdx: integer;
   keyText, rest: RawUtf8;
+  map: PYamlMapNames;
   line: PRawUtf8;
   c: PYamlLine;
 begin
   fOut.Add('{');
   first := true;
-  level := -1;
-  if fHasMerge then
-  begin
-    // track key names and "<<" values with no local managed variable
-    level := fMapLevel;
-    inc(fMapLevel);
-    if level >= length(fMaps) then
-      SetLength(fMaps, NextGrow(level));
-    fMaps[level].Count := 0;
-    fMaps[level].MergeCount := 0;
-    fMaps[level].HasVoid := false;
-  end;
+  map := nil;
+  if fHasMerge or
+     fCheckDup then
+    map := PushMap; // track key names and "<<" values
   line := nil;
   if FirstEntry <> '' then
     line := @FirstEntry; // from "- key: value" implicit mapping in a sequence
@@ -4548,18 +4616,18 @@ begin
       break;
     line := nil;
     lineIdx := fIdx;
-    if level >= 0 then
-      if keyText = '<<' then
+    if map <> nil then
+      if fHasMerge and
+         (keyText = '<<') then
       begin
         // YAML merge key: store the value JSON, and emit it at the end
-        // (fMaps[] may be reallocated by any nested call)
         rest := CaptureNode(rest, Indent, lineIdx, ynMapValue);
-        fMaps[level].MergeIdx := lineIdx;
-        AddRawUtf8(fMaps[level].Merges, fMaps[level].MergeCount, rest);
+        map^.MergeIdx := lineIdx;
+        AddRawUtf8(map^.Merges, map^.MergeCount, rest);
         continue;
       end
       else
-        YamlAddKeyName(fMaps[level], keyText);
+        AddKeyName(map, keyText, lineIdx);
     if not first then
       fOut.AddDirect(',');
     first := false;
@@ -4567,10 +4635,10 @@ begin
     fOut.AddDirect(':');
     ParseEntryValue(rest, Indent, lineIdx, ynMapValue);
   until false;
-  if level >= 0 then
+  if map <> nil then
   begin
-    if fMaps[level].MergeCount <> 0 then
-      EmitMerges(fMaps[level], first);
+    if map^.MergeCount <> 0 then
+      EmitMerges(map, first);
     dec(fMapLevel);
   end;
   fOut.AddDirect('}');
@@ -4783,6 +4851,7 @@ end;
 procedure TYamlToJson.ParseFlowMap(var p: PUtf8Char; LineIdx: integer);
 var
   first: boolean;
+  map: PYamlMapNames;
   keyStart, keyEnd: PUtf8Char;
   keyText, valText: RawUtf8;
 begin
@@ -4791,6 +4860,9 @@ begin
   inc(p);
   fOut.Add('{');
   first := true;
+  map := nil;
+  if fCheckDup then
+    map := PushMap;
   repeat
     // skip whitespace
     while p^ in [' ', #9] do
@@ -4801,6 +4873,8 @@ begin
     begin
       inc(p);
       fOut.AddDirect('}');
+      if map <> nil then
+        dec(fMapLevel);
       exit;
     end;
     if not first then
@@ -4839,6 +4913,8 @@ begin
     FastSetString(keyText, keyStart, keyEnd);
     TrimSelf(keyText);
     CheckUnsupportedScalar(LineIdx, pointer(keyText));
+    if map <> nil then
+      AddKeyName(map, keyText, LineIdx);
     EmitKey(keyText, LineIdx);
     fOut.AddDirect(':');
     first := false;
@@ -5065,6 +5141,7 @@ begin
   FillLines(Yaml);
   fIdx := 0;
   fHasMerge := YamlHasMergeKey(Yaml); // record key names only if needed
+  fCheckDup := YamlRejectDuplicateKeys;
   c := SkipBlankLines;
   if AtEnd then
   begin
