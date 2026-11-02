@@ -6748,6 +6748,7 @@ procedure TTestCoreCrypto._Authenticode;
 var
   fn: TFileName;
   {$ifdef OSWINDOWS}
+  wvs: TWinVerifyStatus;
   exe: TFileName;
   sig, bin: RawByteString;
   {$endif OSWINDOWS}
@@ -6767,22 +6768,25 @@ begin
     // kernel32.dll is likely to have an embedded signature (i.e. not from a
     // catalog), in the PE32 or PE32+ format matching the current bitness
     exe := GetEnvironmentVariable('SystemRoot') + '\System32\kernel32.dll';
-    if WinVerifyExeSignature(exe) <> wvsValid then
-      AddConsole('% has no embedded signature', [exe])
+    wvs := WinVerifyExeSignature(exe);
+    if wvs <> wvsValid then
+      AddConsole('% returned % - skipped', [exe, ToText(wvs)^])
     else
     begin
       sig := GetExeSignature(exe);
       Check((sig <> '') and
             (sig[1] = #$30), 'kernel32 PKCS#7'); // DER ASN.1 SEQUENCE
-      Check(IsExeSigned(exe), 'kernel32');
-      Check(IsExeSignatureValid(exe), 'kernel32');
+      Check(IsExeSigned(exe), 'kernel32 IsExeSigned');
+      Check(IsExeSignatureValid(exe), 'kernel32 IsExeSignatureValid');
       // tampered content is detected, even if the signature itself is intact
       bin := StringFromFile(exe);
+      if not CheckUtf8(bin <> '', '% load', [exe]) then
+        exit;
       PByteArray(bin)[length(bin) shr 2] := PByteArray(bin)[length(bin) shr 2] xor $ff;
-      Check(FileFromString(bin, fn));
-      CheckEqual(GetExeSignature(fn), sig, 'tampered');
-      Check(WinVerifyExeSignature(fn) = wvsBadDigest, 'tampered');
-      Check(not IsExeSignatureValid(fn), 'tampered');
+      Check(FileFromString(bin, fn), 'fn');
+      CheckEqual(GetExeSignature(fn), sig, 'tampered GetExeSignature');
+      Check(WinVerifyExeSignature(fn) = wvsBadDigest, 'tampered WinVerifyExeSignature');
+      Check(not IsExeSignatureValid(fn), 'tampered IsExeSignatureValid');
     end;
     {$endif OSWINDOWS}
   finally
