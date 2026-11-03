@@ -35,6 +35,78 @@ the code was correct and well tested and *looked* like mORMot, but on closer loo
 - **Tests:** no exception should be logged during a normal test run; skip tests cleanly when
   an optional library is missing (and on unsupported bitness).
 
+## Code quality: lessons from Arnaud's rework (2026-11-02)
+
+After merging the DuckDB units, Arnaud rewrote them himself (`caf708c0d`, `e6ce529bb`,
+`eb1f9937d`, fixes up to `c3f4abb0d`). Read these diffs before similar work: they show
+concretely what "mORMot intent" means. Rules derived from them:
+
+**Strings and memory**
+- Helpers called per value return text as a `var result: RawUtf8` parameter (procedure),
+  not as a function result: the caller can reuse its buffer and no hidden temporary is
+  created (e.g. `DuckDBEnumValue`, `DuckUuidToText`).
+- Never convert a value to `RawUtf8` just to parse it again (`GetInt64(ColumnUtf8(..))`):
+  write it into a stack `TTemp47` and parse the `PUtf8Char` (`GetInt64`, `GetExtended`,
+  `StrToCurr64`, `Iso8601ToDateTimePUtf8CharVar`).
+- A `PUtf8Char` into a network or C buffer is **not #0-terminated**: copy short values into
+  a `TTemp47` and add the #0 before calling a #0-based parser.
+- Concatenate with `Join([...], result)`, `Append(s, ...)` or `Make([...])`, not `a + b + c`.
+- Compute invariant values once and store them in a field (e.g. the library version text
+  set in the constructor, not converted at each call).
+- `AllocMem()` instead of `GetMem()` + `FillCharFast()`.
+
+**Data structures**
+- Per-column boolean flags as a bit array (`TBytes` + `SetBitPtr`/`GetBitPtr`), not
+  `TBooleanDynArray` (the one place where `TBytes` is the right type). `SetBitPtr` writes
+  32-bit words: allocate `(n + 31) shr 3` bytes.
+- Keep per-execution state in fields of the object, instead of returning dynamic arrays
+  from one method to the next.
+- Iterate arrays of records with a typed pointer (`p := pointer(arr)` ... `inc(p)`), not
+  with `arr[i]` and never with `with`.
+- Logic depending on one record/object only becomes a method of that type (e.g.
+  `TQuackType.EnumIndexAt`), not a free function taking it as parameter.
+- No wrapper function whose body is a single pointer cast: write `PInteger(P)^` inline.
+
+**Hot paths**
+- Specialize the frequent cases of a `case` dispatch (e.g. write INTEGER/BIGINT columns
+  directly with `W.Add(PInteger(p)^)`), keep the generic reader for the rare types.
+- Small per-value helpers get `{$ifdef HASINLINE} inline; {$endif}`.
+- Early `exit` instead of nested `if`/`else`; a `const` table (`array[boolean] of ...`)
+  instead of `if`/`else` choosing between two formats or values.
+- A shared tail may use `goto` (as in mORMot core) rather than duplicating a block. Avoid
+  an implicit `try..finally` in a hot loop with `pointer` + `RawUtf8(p)` +
+  `FastAssignNew(p)` only where it is measurably hot.
+
+**Correctness**
+- Read binary values with their real signedness (a DuckDB DATE is a *signed* 32-bit day
+  count: `PInteger`, not `PCardinal` - dates before 1970 are negative).
+- Text returned by a C API (e.g. `duckdb_result_error`) dies with its owner: create the
+  exception first (`E := ESql...CreateUtf8(...)`), then release the C resource, then
+  `raise E`. Our original code read the message after `destroy_result()`.
+- Use the core constants (`MicroSecsPerSec`, `MicroSecsPerHour`, `UnixDelta`...) instead of
+  local copies; mind the 64-bit typing for Delphi (warning W1073).
+
+**Core, layout and documentation**
+- When a generic primitive is missing, add it to the core unit in its own commit
+  ("core: new X function") instead of a private helper: Arnaud added
+  `TFastReader.Peek2/4/8`, `SetBitPtr(.., aSet)`, `TSynLibrary.LibraryName`,
+  `MicroSecsPerHour` for this rework.
+- The unit header lists the sections exactly as the `{ ************ Title }` markers, and
+  the implementation has the same sections in the same order, each only once.
+- One value per line in multi-value `case` labels and in long set constants.
+- New units or classes get a short entry in `src/<folder>/README.md`; a reused generic field
+  (e.g. `ColumnAttr`) documents its meaning for the new provider.
+
+**Tests**
+- Linear test steps: no `for pass := 0 to 1` loop with per-pass branches.
+- Parameterized SQL (`?`) in tests too, no literal values formatted into the SQL text.
+- The test identification shows the library name and version.
+- Each test must also run alone (`/test <class>`): guard state from previous methods.
+
+**Self-check:** even Arnaud's rework needed six follow-up fix commits (bit array size, signedness,
+#0 termination, Delphi compilation). After each refactoring pass, compile with Delphi and
+FPC and run the tests of the unit before the next pass.
+
 ## mORMot defaults (details: `docs/mORMot2-SAD-Recommended-Patterns.md`, Part A.1/A.2)
 
 - Use the framework types on every path it serializes: `RawUtf8` (not `string`),

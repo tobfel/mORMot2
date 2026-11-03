@@ -149,30 +149,41 @@ Use `TSqlDBConnectionProperties.AdaptSqlLimitForEngineList()` for automatic conv
 
 Source: Arnaud Bouchez review of PR #666 (`mormot.db.raw.duckdb` / `mormot.db.sql.duckdb`),
 https://github.com/synopse/mORMot2/issues/423#issuecomment-6218806358 (2026-10-16).
-He merged the PR and started a cleanup on master (commits `2d1593c57`..`587ce1674`), but
-said it is not finished. Read the current trunk code before touching these units.
+He merged the PR and started a cleanup on master (commits `2d1593c57`..`587ce1674`), then
+merged the follow-up PRs (#681 Quack client, #682 ORM, #683 duckdbcli, #704) and reworked
+both units himself on 2026-11-02 (`caf708c0d`..`c3f4abb0d`, general lessons in the root
+`CLAUDE.md`). Read the current trunk code before touching these units.
 
 **What DuckDB is for in mORMot:** an analytical (OLAP) query engine over large datasets
 (CSV, Parquet, attached PostgreSQL...), not a replacement for SQLite3 as in-process
 transactional/memory database. Row-by-row INSERT speed is far below SQLite3 - do not
 benchmark or sell it on insertion numbers.
 
-### Open TODOs (priority order)
+### TODOs
 
-1. **Implement `TOnBatchInsert` for DuckDB** (`TSqlDBConnectionProperties.OnBatchInsert`,
-   see `mormot.db.sql.pas`). This is the minimum: it is used directly by the ORM batch
-   process, and is easily implemented on top of the `TSqlDBDuckDBAppender` logic.
-2. **Remove the array binding (`BindArray`) feature** from `TSqlDBDuckDBStatement`
-   (`BindArrayRow` and the per-row loop in `ExecutePrepared`). It still executes one
-   statement per row, so it is *slower* than plain manual inserts - it is just bloat.
-   Note: mormot.db.proxy batches (e.g. a DuckDB proxy server) rely on it today, so route
-   proxy batches to the appender / `OnBatchInsert` first.
-3. **Maybe** use `duckdb_append_data_chunk` for bulk loading - unclear whether it is
+Done on master: `OnBatchInsert` via the appender (`AppendBatchInsert`, with a multi-values
+INSERT fallback when not all columns are given), `BindArray` removed (raises, use
+`OnBatchInsert` or a transaction), Delphi warning W1073 (core time constants).
+
+Still open:
+1. **Maybe** use `duckdb_append_data_chunk` for bulk loading - unclear whether it is
    worth it; measure against the appender before adopting.
-4. **Static linking** of the `.a` (shipped with each DuckDB release) - low priority:
+2. **Static linking** of the `.a` (shipped with each DuckDB release) - low priority:
    the library is ~60MB, not a trivial dependency.
-5. Fix Delphi warning W1073 in `mormot.db.raw.duckdb.pas` (`DuckTimeToText`: signed
-   constant mixed with `QWord` in `u mod DUCKDB_MICROSPERSEC`).
+
+### Implementation notes from the 2026-11-02 rework
+
+- Column values are converted from the chunk data with `DuckFixedTo*()` first; only when
+  they return `dcFallback`/false, the value goes through a `TTemp47` text buffer
+  (`ColumnTemp()` in `mormot.db.sql.duckdb`, `TQuackVector.TextAt()` for Quack) - never
+  through `ColumnUtf8()`.
+- `ColumnToJson()` writes the frequent integer types directly; keep it that way when adding
+  types.
+- DATE is a signed 32-bit day count: read it as `PInteger`, never `PCardinal`.
+- Errors from the C API: `TDuckDBLib.RaiseResultError()` and `ExecuteStmt` create the
+  exception before `destroy_result()`, since `result_error()` points into the result.
+- VARIANT columns are flagged in bit arrays (`TSqlDBDuckDBStatement.fVariants`,
+  `TQuackResponse.VariantColumns`) passed to `DuckDBVariantSql()`.
 
 ### VARIANT columns (DuckDB 1.5+)
 
