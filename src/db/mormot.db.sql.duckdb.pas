@@ -1205,7 +1205,7 @@ begin
     if DuckDBTypeHasVariant(nfo^.Info) then
     begin
       if fVariants = nil then
-        SetLength(fVariants, (length(fInfo) + 7) shr 3);
+        SetLength(fVariants, (length(fInfo) + 31) shr 3);
       SetBitPtr(fVariants, i);
     end;
     inc(nfo);
@@ -1356,79 +1356,91 @@ begin
     result := not IsValid(Validity, fChunkRow);
 end;
 
-function ColumnTemp(c: PDuckDBColumnInfo; var tmp: TTemp47): PUtf8Char;
-  {$ifdef HASINLINE} inline; {$endif}
+function ColumnTemp(c: PDuckDBColumnInfo; d: pointer; row: PtrInt;
+  var tmp: TTemp47): PUtf8Char;
+var
+  len: integer; // not PtrInt
 begin
-  if DuckFixedToTextBuf(
-      c^.Info.TypeId, c^.Info.Internal, c^.Info.Scale, c^.Data, tmp) < 0 then
-    result := nil // too complex type to be reduced as a number or date/time
-  else
-    result := @tmp;
+  result := @tmp;
+  if DuckFixedToTextBuf(c^.Info.TypeId, c^.Info.Internal, c^.Info.Scale, d, tmp) >= 0 then
+    exit;
+  if c^.Info.TypeID = DUCKDB_TYPE_VARCHAR then // short strings as #0-ended buffer
+  begin
+    d := DuckStringPtr(DuckStringAt(c^.Data, Row), len);
+    if len < high(tmp) then
+    begin
+      MoveFast(d^, tmp, len);
+      tmp[len] := #0;
+      exit;
+    end;
+  end;
+  result := nil; // too complex type to be reduced as a number or date/time
 end;
 
 function TSqlDBDuckDBStatement.ColumnInt(Col: integer): Int64;
 var
   c: PDuckDBColumnInfo;
+  p: pointer;
   tmp: TTemp47;
 begin
   c := CheckCol(Col);
   result := 0;
   if not IsValid(c^.Validity, fChunkRow) then
     exit;
-  with c^.Info do
-    case DuckFixedToInt64(TypeId, Internal, Scale,
-           PAnsiChar(c^.Data) + fChunkRow * Size, result) of
-      dcOk:
-        exit;
-      dcOverflow:
-        ESqlDBDuckDB.RaiseUtf8('%.ColumnInt(%): 128-bit overflow', [self, Col]);
-    end;
-  result := GetInt64(ColumnTemp(c, tmp));
+  p := PAnsiChar(c^.Data) + fChunkRow * c^.Info.Size;
+  case DuckFixedToInt64(c^.Info.TypeId, c^.Info.Internal, c^.Info.Scale, p, result) of
+    dcOverflow:
+      ESqlDBDuckDB.RaiseUtf8('%.ColumnInt(%): 128-bit overflow', [self, Col]);
+    dcFallback:
+      result := GetInt64(ColumnTemp(c, p, fChunkRow, tmp));
+  end;
 end;
 
 function TSqlDBDuckDBStatement.ColumnDouble(Col: integer): double;
 var
   c: PDuckDBColumnInfo;
+  p: pointer;
   tmp: TTemp47;
 begin
   c := CheckCol(Col);
   result := 0;
-  if IsValid(c^.Validity, fChunkRow) then
-    with c^.Info do
-      if not DuckFixedToDouble(TypeId, Internal, Scale,
-               PAnsiChar(c^.Data) + fChunkRow * Size, result) then
-        result := GetExtended(ColumnTemp(c, tmp));
+  if not IsValid(c^.Validity, fChunkRow) then
+    exit;
+  p := PAnsiChar(c^.Data) + fChunkRow * c^.Info.Size;
+  if not DuckFixedToDouble(c^.Info.TypeId, c^.Info.Internal, c^.Info.Scale, p, result) then
+    result := GetExtended(ColumnTemp(c, p, fChunkRow, tmp));
 end;
 
 function TSqlDBDuckDBStatement.ColumnCurrency(Col: integer): currency;
 var
   c: PDuckDBColumnInfo;
+  p: pointer;
   tmp: TTemp47;
 begin
   c := CheckCol(Col);
   result := 0;
-  if IsValid(c^.Validity, fChunkRow) then
-    with c^.Info do
-      if not DuckFixedToCurrency(TypeId, Internal, Scale,
-               PAnsiChar(c^.Data) + fChunkRow * Size, result) then
-        PInt64(@result)^ := StrToCurr64(ColumnTemp(c, tmp));
+  if not IsValid(c^.Validity, fChunkRow) then
+    exit;
+  p := PAnsiChar(c^.Data) + fChunkRow * c^.Info.Size;
+  if not DuckFixedToCurrency(c^.Info.TypeId, c^.Info.Internal, c^.Info.Scale, p, result) then
+    PInt64(@result)^ := StrToCurr64(ColumnTemp(c, p, fChunkRow, tmp));
 end;
 
 function TSqlDBDuckDBStatement.ColumnDateTime(Col: integer): TDateTime;
 var
   c: PDuckDBColumnInfo;
   tmp: TTemp47;
-  txt: PUtf8Char;
+  p: pointer;
 begin
   c := CheckCol(Col);
   result := 0;
-  if IsValid(c^.Validity, fChunkRow) then
-    if not DuckFixedToDateTime(c^.Info.TypeId,
-             PAnsiChar(c^.Data) + fChunkRow * c^.Info.Size, result) then
-    begin
-      txt := ColumnTemp(c, tmp);
-      Iso8601ToDateTimePUtf8CharVar(txt, StrLen(txt), result);
-    end;
+  if not IsValid(c^.Validity, fChunkRow) then
+    exit;
+  p := PAnsiChar(c^.Data) + fChunkRow * c^.Info.Size;
+  if DuckFixedToDateTime(c^.Info.TypeId, p, result) then
+    exit;
+  p := ColumnTemp(c, p, fChunkRow, tmp);
+  Iso8601ToDateTimePUtf8CharVar(p, StrLen(p), result);
 end;
 
 function TSqlDBDuckDBStatement.ColumnUtf8(Col: integer): RawUtf8;
@@ -1488,7 +1500,7 @@ begin
   end;
   case c^.Info.TypeId of
     DUCKDB_TYPE_BOOLEAN, // boolean as 0/1
-    DUCKDB_TYPE_TINYINT:
+    DUCKDB_TYPE_UTINYINT:
       W.AddB(PDuckU8Array(c^.Data)^[fChunkRow]);
     DUCKDB_TYPE_INTEGER:
       W.Add(PDuckI32Array(c^.Data)^[fChunkRow]);
@@ -1497,7 +1509,7 @@ begin
     DUCKDB_TYPE_BIGINT:
       W.Add(PDuckI64Array(c^.Data)^[fChunkRow]);
     DUCKDB_TYPE_SMALLINT,
-    DUCKDB_TYPE_UTINYINT,
+    DUCKDB_TYPE_TINYINT,
     DUCKDB_TYPE_USMALLINT:
       W.Add(ReadInteger(c^.Info.TypeId, c^.Data, fChunkRow));
     DUCKDB_TYPE_VARCHAR:
@@ -2515,6 +2527,7 @@ var
   v: TQuackVector;
   i: PtrInt;
   t: TQuackType;
+  tmp: TTemp47;
 begin
   v := CheckCol(Col);
   result := 0;
@@ -2530,7 +2543,7 @@ begin
       dcOverflow:
         ESqlDBQuack.RaiseUtf8('%.ColumnInt(%): 128-bit overflow', [self, Col]);
     end;
-  result := GetInt64(v.TextAt(i));
+  result := GetInt64(v.TextAt(i, tmp));
 end;
 
 function TSqlDBQuackStatement.ColumnDouble(Col: integer): double;
@@ -2538,6 +2551,7 @@ var
   v: TQuackVector;
   i: PtrInt;
   t: TQuackType;
+  tmp: TTemp47;
 begin
   v := CheckCol(Col);
   result := 0;
@@ -2548,7 +2562,7 @@ begin
   if (t.Storage <> qsFixed) or
      not DuckFixedToDouble(t.DuckType, t.ElemSizeInternal, t.Scale,
            v.DataAt(i), result) then
-    result := GetExtended(v.TextAt(i));
+    result := GetExtended(v.TextAt(i, tmp));
 end;
 
 function TSqlDBQuackStatement.ColumnCurrency(Col: integer): currency;
@@ -2556,6 +2570,7 @@ var
   v: TQuackVector;
   i: PtrInt;
   t: TQuackType;
+  tmp: TTemp47;
 begin
   v := CheckCol(Col);
   result := 0;
@@ -2566,13 +2581,14 @@ begin
   if (t.Storage <> qsFixed) or
      not DuckFixedToCurrency(t.DuckType, t.ElemSizeInternal, t.Scale,
            v.DataAt(i), result) then
-    PInt64(@result)^ := StrToCurr64(v.TextAt(i));
+    PInt64(@result)^ := StrToCurr64(v.TextAt(i, tmp));
 end;
 
 function TSqlDBQuackStatement.ColumnDateTime(Col: integer): TDateTime;
 var
   v: TQuackVector;
   i: PtrInt;
+  tmp: TTemp47;
 begin
   v := CheckCol(Col);
   result := 0;
@@ -2581,7 +2597,7 @@ begin
     exit;
   if (v.VType.Storage <> qsFixed) or
      not DuckFixedToDateTime(v.VType.DuckType, v.DataAt(i), result) then
-    result := Iso8601ToDateTime(v.TextAt(i));
+    result := Iso8601ToDateTime(v.TextAt(i, tmp));
 end;
 
 function TSqlDBQuackStatement.ColumnUtf8(Col: integer): RawUtf8;
@@ -2620,7 +2636,7 @@ begin
   if v.IsStoredValid(i) then
     case v.VType.DuckType of
       DUCKDB_TYPE_BOOLEAN,
-      DUCKDB_TYPE_TINYINT:
+      DUCKDB_TYPE_UTINYINT:
         W.Add(PByte(v.DataAt(i))^); // boolean as 0/1
       DUCKDB_TYPE_INTEGER:
         W.Add(PInteger(v.DataAt(i))^);

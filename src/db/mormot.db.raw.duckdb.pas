@@ -765,9 +765,9 @@ type
     /// return a pointer and the length of a stored string
     function StringAt(Index: PtrInt; out Len: integer): PUtf8Char;
     /// return a pointer to a VType.Storage = qsString text, or nil
+    // - makes a local #0-ended copy to Temp for safety
     // - used e.g. as fallback for ColumnInt/ColumnDouble/ColumnCurrency() methods
-    function TextAt(Index: PtrInt): PUtf8Char;
-      {$ifdef HASINLINE} inline; {$endif}
+    function TextAt(Index: PtrInt; var Temp: TTemp47): PUtf8Char;
   end;
   TQuackVectorDynArray = array of TQuackVector;
 
@@ -1005,11 +1005,11 @@ end;
 
 procedure TDuckDBLib.RaiseResultError(res: PDuckDBResult; const ctxt: RawUtf8);
 var
-  msg: PUtf8Char;
+  E: Exception;
 begin
-  msg := pointer(result_error(res));
-  destroy_result(res);
-  ESqlDBDuckDB.RaiseUtf8('DuckDB % failed: %', [ctxt, msg]);
+  E := ESqlDBDuckDB.CreateUtf8('DuckDB % failed: %', [ctxt, result_error(res)]);
+  destroy_result(res); // release result_error(res)
+  raise E;
 end;
 
 function TDuckDBLib.Exec(conn: TDuckDBConnection; const sql: RawUtf8): Int64;
@@ -1209,8 +1209,6 @@ const
   DUCKDB_FIRST_DAY           = -719468;   // 0000-03-01
   DUCKDB_FIRST_TDATETIME_DAY = -719162;   // 0001-01-01
   DUCKDB_LAST_DAY            = 2932896;   // 9999-12-31
-  DUCKDB_MICROSPERSEC        = Int64(1000000);
-  DUCKDB_MICROSPERHOUR       = Int64(3600000000);
 
 procedure DuckCheckDay(Days: Int64; ForDateTime: boolean = false);
 begin
@@ -1266,8 +1264,8 @@ begin
   if Micro = 0 then
     exit;
   tmp[0] := #0;
-  AppendShortQWord(Micro + DUCKDB_MICROSPERSEC, tmp);
-  tmp[1] := '.'; // replace first '1' = DUCKDB_MICROSPERSEC
+  AppendShortQWord(Micro + MicroSecsPerSec, tmp);
+  tmp[1] := '.'; // replace first '1' = MicroSecsPerSec
   while tmp[length(tmp)] = '0' do
     dec(tmp[0]);
   Append(result, @tmp[1], length(tmp));
@@ -1286,9 +1284,9 @@ begin
   st.FromMS(PtrUInt((u mod QWord(MicroSecsPerDay)) div 1000));
   st.ToIsoTime(result, '');
   if u >= QWord(MicroSecsPerDay) then
-    result := Int64ToUtf8(Int64(u div QWord(DUCKDB_MICROSPERHOUR))) +
+    result := Int64ToUtf8(Int64(u div MicroSecsPerHour)) +
               copy(result, 3, maxInt);
-  DuckAppendMicroFraction(Int64(u) mod DUCKDB_MICROSPERSEC, result);
+  DuckAppendMicroFraction(Int64(u mod MicroSecsPerSec), result);
   if Micros < 0 then
     result := '-' + result;
 end;
@@ -1305,7 +1303,7 @@ begin
   else
   begin
     // Floor division correctly handles timestamps before the Unix epoch
-    FloorDivMod(Micros, DUCKDB_MICROSPERSEC, secs, micro);
+    FloorDivMod(Micros, MicroSecsPerSec, secs, micro);
     FloorDivMod(secs, SecsPerDay, days, rem);
     DuckCheckDay(days);
     st.FromUnixTime(secs);
@@ -1372,7 +1370,7 @@ begin
      (tmp[0] = #0) then
   begin
     if tmp[0] <> #0 then
-      AppendShortChar(' ', @result);
+      AppendShortChar(' ', @tmp);
     t := nil;
     DuckTimeToText(v.Micros, RawUtf8(t));
     AppendShortAnsi7String(RawUtf8(t), tmp);
@@ -1544,7 +1542,7 @@ begin
       result := PWord(P)^;
     DUCKDB_TYPE_INTEGER,
     DUCKDB_TYPE_DATE:
-      result := PCardinal(P)^;
+      result := PInteger(P)^;
     DUCKDB_TYPE_UINTEGER:
       result := PCardinal(P)^;
   else // BIGINT, UBIGINT and the 64-bit date/time kinds
@@ -1694,7 +1692,7 @@ begin
         DoubleToStr(d, result); // very long text
       end;
     DUCKDB_TYPE_DATE:
-      DuckDateToText(PCardinal(P)^, result);
+      DuckDateToText(PInteger(P)^, result);
     DUCKDB_TYPE_TIME:
       DuckTimeToText(PInt64(P)^, result);
     DUCKDB_TYPE_TIME_NS:
@@ -1784,7 +1782,7 @@ begin
     DUCKDB_TYPE_SMALLINT:
       result := PSmallInt(P)^;
     DUCKDB_TYPE_INTEGER:
-      result := PCardinal(P)^;
+      result := PInteger(P)^;
   else
     result := PInt64(P)^;
   end;
@@ -1919,7 +1917,7 @@ begin
   result := true;
   case TypeId of
     DUCKDB_TYPE_DATE:
-      Value := PCardinal(P)^ + UnixDelta;
+      Value := PInteger(P)^ + UnixDelta;
     DUCKDB_TYPE_TIME:
       Value := PInt64(P)^ / MicroSecsPerDay;
     DUCKDB_TYPE_TIME_NS:
@@ -2481,16 +2479,26 @@ end;
 
 function TQuackVector.StringAt(Index: PtrInt; out Len: integer): PUtf8Char;
 begin
-  result := PUtf8Char(StrBytes + StrOffs^[Index]);
+  result := @StrBytes[StrOffs^[Index]];
   Len := StrOffs^[StoredCount + Index];
 end;
 
-function TQuackVector.TextAt(Index: PtrInt): PUtf8Char;
+function TQuackVector.TextAt(Index: PtrInt; var Temp: TTemp47): PUtf8Char;
+var
+  len: PtrInt;
 begin
   if VType.Storage = qsString then
-    result := PUtf8Char(StrBytes + StrOffs^[Index])
-  else
-    result := nil;
+  begin
+    len := StrOffs^[StoredCount + Index]; // inlined StringAt()
+    if len < high(Temp) then
+    begin
+      MoveFast(StrBytes[StrOffs^[Index]], Temp, len);
+      Temp[len] := #0;
+      result := @Temp;
+      exit;
+    end;
+  end;
+  result := nil;
 end;
 
 
@@ -2939,7 +2947,7 @@ begin
             if ColumnTypes[i].HasVariant then
             begin
               // the rows can't be decoded: ask them again as JSON
-              SetLength(VariantColumns, (n + 7) shr 3);
+              SetLength(VariantColumns, (n + 31) shr 3);
               SetBitPtr(VariantColumns, i);
               for j := i + 1 to n - 1 do
                 if ColumnTypes[j].HasVariant then
