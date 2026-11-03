@@ -4523,7 +4523,7 @@ procedure PatchCodeProtectBack;
 { **************** TSynLocker/TSynLocked and Low-Level Threading Features }
 
 type
-  /// a lightweight exclusive non-reentrant lock, stored in a PtrUInt value
+  /// a lightweight exclusive non-reentrant lock, stored in a 32-bit slot
   // - calls SwitchToThread after some spinning, but don't use any R/W OS API
   // - warning: methods are non reentrant, i.e. calling Lock twice in a raw would
   // deadlock: see reentrant TMultiLightLock or TRWLock or TSynLocker/TOSLock
@@ -4579,9 +4579,9 @@ type
   TMultiLightLock = object
   {$endif USERECORDWITHMETHODS}
   private
-    Flags: cardinal;     // is also the reentrant > 0 counter
-    ThreadID: TThreadID; // PtrUInt on POSIX, DWord on Windows
-    procedure LockSpin;  // called by the Lock method when inlined
+    Flags: cardinal;           // is also the reentrant > 0 counter
+    LockedThreadID: TThreadID; // PtrUInt on POSIX, DWord on Windows
+    procedure LockSpin;
   public
     /// to be called if the instance has not been filled with 0
     // - e.g. not needed if TMultiLightLock is defined as a class field
@@ -4610,6 +4610,9 @@ type
     /// leave an exclusive reentrant lock
     procedure UnLock;
       {$ifdef HASINLINE} inline; {$endif}
+    /// wait until any Lock in another thread is released
+    // - don't wait when called from a the main re-entrant Lock thread
+    procedure WaitUnlocked;
   end;
   PMultiLightLock = ^TMultiLightLock;
 
@@ -11559,7 +11562,11 @@ end;
 
 function TLightLock.IsLocked: boolean;
 begin
+  {$ifdef CPUINTEL}
   result := Flags <> 0;
+  {$else}
+  result := not LockedExc32(Flags, {to=}0, {from=}0); // atomic compare
+  {$endif CPUINTEL}
 end;
 
 procedure TLightLock.LockSpin;
@@ -11610,13 +11617,13 @@ end;
 procedure TMultiLightLock.Init;
 begin
   Flags := 0;
-  ThreadID := TThreadID(0);
+  LockedThreadID := TThreadID(0);
 end;
 
 procedure TMultiLightLock.Done;
 begin
   Flags := MaxInt;
-  ThreadID := TThreadID(0); // invalid combination to let TryLock fail
+  LockedThreadID := TThreadID(0); // invalid combination to let TryLock fail
 end;
 
 procedure TMultiLightLock.Lock;
@@ -11628,7 +11635,7 @@ end;
 procedure TMultiLightLock.UnLock;
 begin
   if Flags = 1 then
-    ThreadID := TThreadID(0); // paranoid
+    LockedThreadID := TThreadID(0); // paranoid
   LockedDec32(@Flags);
 end;
 
@@ -11640,12 +11647,12 @@ begin
   if Flags = 0 then    // is not locked
     if LockedExc32(Flags, {to=}1, {from=}0) then // try atomic acquisition
     begin
-      ThreadID := tid;
+      LockedThreadID := tid;
       result := true;  // acquired the lock
     end
     else
       result := false  // impossible to acquire this lock
-  else if ThreadID <> tid then
+  else if LockedThreadID <> tid then
     result := false // locked by another thread
   else
   begin
@@ -11657,12 +11664,16 @@ end;
 procedure TMultiLightLock.ForceLock;
 begin
   Flags := MaxInt; // forced acquisition, whatever the current state is
-  ThreadID := GetCurrentThreadId;
+  LockedThreadID := GetCurrentThreadId;
 end;
 
 function TMultiLightLock.IsLocked: boolean;
 begin
+  {$ifdef CPUINTEL}
   result := Flags <> 0;
+  {$else}
+  result := not LockedExc32(Flags, {to=}0, {from=}0); // atomic compare
+  {$endif CPUINTEL}
 end;
 
 procedure TMultiLightLock.LockSpin;
@@ -11673,6 +11684,18 @@ begin
   repeat
     spin := SpinAndWait(spin);
   until TryLock;
+end;
+
+procedure TMultiLightLock.WaitUnlocked;
+var
+  spin: PtrUInt;
+begin
+  if (Flags = 0) or
+     (GetCurrentThreadId = LockedThreadID) then // from re-entrant Lock thread
+    exit;
+  spin := SPIN_COUNT;
+  while IsLocked do // don't acquire the lock, just ensure is unlocked
+    spin := SpinAndWait(spin);
 end;
 
 
@@ -11758,7 +11781,11 @@ end;
 
 function TRWLightLock.IsLocked: boolean;
 begin
-  result := (Flags <> 0);
+  {$ifdef CPUINTEL}
+  result := Flags <> 0;
+  {$else}
+  result := not LockedExc32(Flags, {to=}0, {from=}0); // atomic compare
+  {$endif CPUINTEL}
 end;
 
 
@@ -11908,7 +11935,11 @@ end;
 
 function TRWLock.IsLocked: boolean;
 begin
-  result := (Flags <> 0);
+  {$ifdef CPUINTEL}
+  result := Flags <> 0;
+  {$else}
+  result := not LockedExc(Flags, {to=}0, {from=}0); // atomic compare
+  {$endif CPUINTEL}
 end;
 
 
@@ -12185,7 +12216,11 @@ end;
 
 function TOSRWLightLock.IsLocked: boolean;
 begin
+  {$ifdef CPUINTEL}
   result := Flags <> 0;
+  {$else}
+  result := not LockedExc32(Flags, {to=}0, {from=}0); // atomic compare
+  {$endif CPUINTEL}
 end;
 
 
