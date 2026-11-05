@@ -115,6 +115,32 @@ concretely what "mORMot intent" means. Rules derived from them:
 - The test identification shows the library name and version.
 - Each test must also run alone (`/test <class>`): guard state from previous methods.
 
+**Interface lifetime vs. owner release** (ab, `24ca88796`, `e15e6c13d`, `5df7dc803`,
+2026-11-04/05: "the properties should be released once all transient statement interfaces
+are released!")
+- Every `ISqlDBRows` / `ISqlDBStatement` (and any other interface whose implementation
+  refers to its owner) must be released **before** the owning `TSqlDBConnectionProperties`
+  / connection / server is freed. Otherwise the interface is finalized at the very end of
+  the method, after `props.Free`, and accesses freed memory: a *random* GPF, often only on
+  some platforms or test orders.
+- Delphi also creates **hidden temporaries** for interface results: `with props.Execute(..)
+  do`, `props.Execute(..).Step`, or an interface passed directly as a parameter. They live
+  until the end of the enclosing routine and cannot be set to `nil` - a manual
+  `rows := nil` is not enough.
+- Pattern: put all interface locals and the test body into a **local sub-procedure**
+  (`procedure DoTests;` declared inside the test method), and keep only the creation of the
+  owner and its `try..finally Free` in the outer method. The compiler finalizes every
+  interface (named or hidden) when `DoTests` returns; comment the call
+  (`// local sub-procedure to ensure all local interfaces are cleared`). Checks that need
+  all statements gone (e.g. `props.ClearConnectionPool` + disconnect counter) come after
+  `DoTests`.
+- Test methods run in the background (`Run(Method, self, 'Name', true, false)`) expose
+  this race much more often: never use `with props.Execute(..)` there, always an explicit
+  local released before the owner.
+- Review every test that frees a provider/server in the same routine that holds an
+  `ISqlDB*` local or uses `with ...Execute(...)` - this was the root cause of all three
+  "random GPF" fixes above.
+
 **Self-check:** even Arnaud's rework needed six follow-up fix commits (bit array size, signedness,
 #0 termination, Delphi compilation). After each refactoring pass, compile with Delphi and
 FPC and run the tests of the unit before the next pass.
