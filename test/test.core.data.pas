@@ -518,6 +518,7 @@ var
   dt: TDateTime;
   ni: TNullableInteger;
   nt: TNullableUtf8Text;
+  b: boolean;
 begin
   CheckEqual(vd.VType, varEmpty);
   TextToVariant('1E629839-D230-4EEE-BA04-BE1258EB3AF6', {allowdouble=}true, v);
@@ -792,6 +793,20 @@ begin
   CheckEqual(i64, 0);
   CheckEqual(AnyVariantToIntegerDef(Null), 0);
   CheckEqual(AnyVariantToIntegerDef(Null, 1), 1);
+  b := false;
+  v := Int64(1); // e.g. a SQL boolean column
+  Check(VariantToBoolean(v, b) and b, 'int64 true');
+  v := Int64(0);
+  Check(VariantToBoolean(v, b) and not b, 'int64 false');
+  v := 1; // varShortInt on FPC, varInteger on Delphi
+  Check(VariantToBoolean(v, b) and b, 'integer true');
+  v := true;
+  Check(VariantToBoolean(v, b) and b, 'boolean true');
+  v := 'false';
+  Check(VariantToBoolean(v, b) and not b, 'text false');
+  v := 1.5;
+  Check(not VariantToBoolean(v, b), 'double');
+  Check(not VariantToBoolean(Null, b), 'null');
   Check(not AnyVariantToDouble(Null, d));
   Check(d = 123.0, '123b');
   u := '1234';

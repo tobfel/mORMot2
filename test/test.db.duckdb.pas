@@ -683,7 +683,7 @@ begin
   CheckEqual(row^.U['name'], 'n2');
   CheckSame(row^.D['v'], 0.5);
   CheckEqual(row^.U['d'], '2020-01-03');
-  CheckEqual(row^.I['b'], 1, 'boolean as 0/1');
+  Check(row^.B['b'], 'boolean as 0/1');
   // read options are passed to the reader function
   doc := fProps.FileToDocVariant(csv, 'header = false, skip = 1');
   CheckEqual(DocVariantData(doc)^.Count, COUNT, 'csv options');

@@ -4484,6 +4484,7 @@ function VariantToCurrency(const V: Variant; var Value: currency): boolean;
 
 /// convert any numerical Variant into a boolean value
 // - text content will return true after case-sensitive 'true' comparison
+// - any ordinal value (e.g. a SQL boolean column as varInt64) is true if = 1
 function VariantToBoolean(const V: Variant; var Value: boolean): boolean;
 
 /// convert any numerical Variant into an integer
@@ -14009,37 +14010,26 @@ end;
 function VariantToBoolean(const V: Variant; var Value: boolean): boolean;
 var
   vd: PVarData;
-  tmp: TVarData;
+  i: Int64;
 begin
   result := false;
   vd := VarDataFromVariant(V); // handle varVariantByRef
-  repeat
-    case cardinal(vd^.VType) of
-      varEmpty,
-      varNull:
-        exit;
-      varBoolean: // 16-bit WordBool to 8-bit boolean
-        if vd^.VBoolean then
-          Value := true // normalize (an OLE WordBool may be $ffff)
-        else
-          Value := false;
-      varInteger: // coming e.g. from TGetJsonField
-        Value := vd^.VInteger = 1;
-      varString:
-        Value := GetBoolean(vd^.VAny);
-      {$ifdef HASVARUSTRING}  varUString, {$endif HASVARUSTRING}
-      varOleStr:
-        Value := GetBooleanW(vd^.VAny);
+  case cardinal(vd^.VType) of
+    varEmpty,
+    varNull:
+      exit;
+    varString:
+      Value := GetBoolean(vd^.VAny);
+    {$ifdef HASVARUSTRING}  varUString, {$endif HASVARUSTRING}
+    varOleStr:
+      Value := GetBooleanW(vd^.VAny);
+  else
+    // varBoolean and any ordinal type (e.g. a SQL column as 0/1), even byref
+    if VariantToInt64(V, i) then
+      Value := i = 1
     else
-      begin
-        vd := SetVarDataUnRefSimpleValue(vd, tmp{%H-});
-        if vd <> nil then
-          continue;
-        exit;
-      end;
-    end;
-    break;
-  until false;
+      exit;
+  end;
   result := true;
 end;
 
