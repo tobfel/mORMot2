@@ -101,6 +101,9 @@ Direct DuckDB Client Access using `mormot.db.raw.duckdb.pas` C API Wrapper
 - `TSqlDBDuckDBConnectionProperties`: one shared duckdb_database instance
 - `TSqlDBDuckDBConnection`: one duckdb_connection per (thread) connection
 - `TSqlDBDuckDBStatement`: prepared statements and chunk-based row access
+- `TSqlDBDuckDBConnectionProperties.ImportFile/ExportSql/ConvertFile/FileToDocVariant`:
+  CSV/TSV, JSON/NDJSON, Parquet, XLSX (excel extension) and ODS/GeoPackage/Shapefile/
+  GeoJSON/KML (spatial extension) files, format recognized from the file extension
 - `TSqlDBQuackConnectionProperties`: native client of a DuckDB Quack server
 - `TSqlDBQuackConnection`: one HTTP keep-alive socket per (thread) connection
 - `TSqlDBQuackStatement`: remote execution and chunk-based row access

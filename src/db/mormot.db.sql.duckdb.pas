@@ -24,6 +24,10 @@ unit mormot.db.sql.duckdb;
     and every TSqlDBConnection runs duckdb_connect() on it
   - result sets are materialized by DuckDB, then read chunk by chunk
   - complex types (LIST, ARRAY, STRUCT, MAP, UNION) are returned as JSON text
+  - data files (CSV, JSON, Parquet, XLSX, ODS...) are read, imported, exported
+    or converted by DuckDB itself via TSqlDBDuckDBConnectionProperties methods
+    like ImportFile() or ConvertFile(): use mormot.core.csv/xlsx for in-memory
+    data, or to fill a TDocVariant with no DuckDB library
 }
 
 interface
@@ -56,6 +60,24 @@ uses
 { ************ TSqlDBDuckDBConnection* and TSqlDBDuckDBStatement Classes }
 
 type
+  /// the file formats recognized by TSqlDBDuckDBConnectionProperties.ImportFile
+  // and the other file methods, from the file name extension
+  // - dffCsv for .csv .tsv .txt via read_csv() (delimiter and types sniffing)
+  // - dffJson for .json (array) .jsonl .ndjson via read_json()
+  // - dffParquet for .parquet via read_parquet()
+  // - dffXlsx for .xlsx via read_xlsx() of the excel extension
+  // - dffGdal for .ods .gpkg .shp .geojson .kml via st_read() and the GDAL
+  // drivers of the spatial extension
+  TDuckDBFileFormat = (
+    dffCsv,
+    dffJson,
+    dffParquet,
+    dffXlsx,
+    dffGdal);
+
+  /// a set of DuckDB file formats
+  TDuckDBFileFormats = set of TDuckDBFileFormat;
+
   /// connection properties to an in-process DuckDB database
   // - aServerName is the database file name, or '' / ':memory:' for an
   // in-memory database shared by all connections of this instance
@@ -66,7 +88,16 @@ type
     fDatabaseLock: TLightLock;
     fConfig: RawUtf8;
     fReadOnly: boolean;
+    fFileFormatLoaded: TDuckDBFileFormats;
     procedure GetForeignKeys; override;
+    /// recognize the file format and LOAD its extension once
+    // - returns the reader SQL, i.e. 'select * from read_csv(?, ReadOptions)',
+    // and the COPY TO clause in CopyClause^ (if not nil)
+    function FileReader(const FileName: TFileName; const ReadOptions: RawUtf8;
+      CopyClause: PRawUtf8 = nil): RawUtf8;
+    /// COPY (Select) TO Dest - Source is bound as first ? parameter if not ''
+    function DoCopy(const Select: RawUtf8; const Source, Dest: TFileName;
+      const CopyOptions: RawUtf8): integer;
     /// OnBatchInsert implementation using TSqlDBDuckDBAppender
     // - fallback to MultipleValuesInsert() if the Appender can't be used
     procedure AppendBatchInsert(Props: TSqlDBConnectionProperties;
@@ -100,6 +131,33 @@ type
     // - runs CREATE SECRET (TYPE quack, TOKEN ..) then ATTACH aEndpoint AS aAlias
     // - remote tables can then be accessed as aAlias.main.tablename
     procedure QuackAttach(const aEndpoint, aToken, aAlias: RawUtf8);
+    /// read a whole data file into a TDocVariant array of objects
+    // - the format is recognized from the file extension, see TDuckDBFileFormat
+    // - ReadOptions are optional reader parameters as SQL, e.g. 'delim = '';'''
+    // for read_csv() or 'sheet = ''Data''' for read_xlsx()
+    // - for in-memory data (e.g. an HTTP body), use mormot.core.tabular instead
+    function FileToDocVariant(const FileName: TFileName;
+      const ReadOptions: RawUtf8 = ''): variant;
+    /// create a new table from the content of a data file
+    // - i.e. CREATE TABLE TableName AS SELECT * FROM read_xxx(FileName)
+    // - column names and types are detected by DuckDB, e.g. DATE from CSV
+    // - TableName is not quoted: it should be a valid SQL identifier
+    // - returns the number of imported rows
+    function ImportFile(const TableName: RawUtf8; const FileName: TFileName;
+      const ReadOptions: RawUtf8 = ''): integer;
+    /// write the result of a SELECT statement into a file
+    // - i.e. COPY (Sql) TO Dest with the format of the Dest file extension
+    // - Sql may use the DuckDB FROM-first syntax, e.g. 'from mytable'
+    // - Sql should have no ? parameter, since the file name is bound as one
+    // - CopyOptions are appended to the COPY options, e.g. 'DELIMITER '';'''
+    // - returns the number of exported rows
+    function ExportSql(const Sql: RawUtf8; const Dest: TFileName;
+      const CopyOptions: RawUtf8 = ''): integer;
+    /// convert a data file into another format, without any Pascal copy
+    // - e.g. ConvertFile('data.csv', 'data.parquet') or ('a.xlsx', 'a.ods')
+    // - returns the number of converted rows
+    function ConvertFile(const Source, Dest: TFileName;
+      const ReadOptions: RawUtf8 = ''; const CopyOptions: RawUtf8 = ''): integer;
   published
     /// DuckDB configuration options, applied when the database is opened
     // - format is 'name1=value1;name2=value2', e.g. 'threads=4;memory_limit=2GB'
@@ -893,6 +951,7 @@ begin
     if fDatabase <> nil then
       DuckDB.close(fDatabase);
     fDatabase := nil;
+    fFileFormatLoaded := []; // LOAD is per database instance
   finally
     fDatabaseLock.UnLock;
   end;
@@ -920,6 +979,118 @@ begin
     Join(['CREATE OR REPLACE SECRET (TYPE quack, TOKEN ',
     QuotedStr(aToken), ', SCOPE ', QuotedStr(aEndpoint), '); ATTACH ',
     QuotedStr(aEndpoint), ' AS ', aAlias]));
+end;
+
+type
+  TDuckDBFileExt = record
+    Ext: RawUtf8;
+    Format: TDuckDBFileFormat;
+    Copy: RawUtf8;
+  end;
+  PDuckDBFileExt = ^TDuckDBFileExt;
+
+const
+  DUCKDB_FILE_EXT: array[0..12] of TDuckDBFileExt = (
+    (Ext: 'csv';     Format: dffCsv;     Copy: 'FORMAT csv, HEADER true'),
+    (Ext: 'tsv';     Format: dffCsv;     Copy: 'FORMAT csv, HEADER true, DELIMITER ''\t'''),
+    (Ext: 'txt';     Format: dffCsv;     Copy: 'FORMAT csv, HEADER true'),
+    (Ext: 'json';    Format: dffJson;    Copy: 'FORMAT json, ARRAY true'),
+    (Ext: 'jsonl';   Format: dffJson;    Copy: 'FORMAT json'),
+    (Ext: 'ndjson';  Format: dffJson;    Copy: 'FORMAT json'),
+    (Ext: 'parquet'; Format: dffParquet; Copy: 'FORMAT parquet'),
+    (Ext: 'xlsx';    Format: dffXlsx;    Copy: 'FORMAT xlsx, HEADER true'),
+    (Ext: 'ods';     Format: dffGdal;    Copy: 'FORMAT gdal, DRIVER ''ODS'''),
+    (Ext: 'gpkg';    Format: dffGdal;    Copy: 'FORMAT gdal, DRIVER ''GPKG'''),
+    (Ext: 'shp';     Format: dffGdal;    Copy: 'FORMAT gdal, DRIVER ''ESRI Shapefile'''),
+    (Ext: 'geojson'; Format: dffGdal;    Copy: 'FORMAT gdal, DRIVER ''GeoJSON'''),
+    (Ext: 'kml';     Format: dffGdal;    Copy: 'FORMAT gdal, DRIVER ''KML'''));
+  DUCKDB_FILE_READER: array[TDuckDBFileFormat] of RawUtf8 = (
+    'read_csv',
+    'read_json',
+    'read_parquet',
+    'read_xlsx',
+    'st_read');
+  DUCKDB_FILE_EXTENSION: array[TDuckDBFileFormat] of RawUtf8 = (
+    '',
+    '',
+    '',
+    'LOAD excel',
+    'LOAD spatial');
+
+function TSqlDBDuckDBConnectionProperties.FileReader(const FileName: TFileName;
+  const ReadOptions: RawUtf8; CopyClause: PRawUtf8): RawUtf8;
+var
+  ext: RawUtf8;
+  e: PDuckDBFileExt;
+  n: integer;
+begin
+  ext := StringToUtf8(ExtractExt(FileName, {withoutdot=}true));
+  e := @DUCKDB_FILE_EXT;
+  n := length(DUCKDB_FILE_EXT);
+  repeat
+    if PropNameEquals(e^.Ext, ext) then
+      break;
+    inc(e);
+    dec(n);
+    if n = 0 then
+      ESqlDBDuckDB.RaiseUtf8('%: unsupported file format %', [self, FileName]);
+  until false;
+  if not (e^.Format in fFileFormatLoaded) then
+  begin
+    // LOAD is idempotent: no lock needed for this flag
+    if DUCKDB_FILE_EXTENSION[e^.Format] <> '' then
+      (ThreadSafeConnection as TSqlDBDuckDBConnection).ExecuteScript(
+        DUCKDB_FILE_EXTENSION[e^.Format]);
+    include(fFileFormatLoaded, e^.Format);
+  end;
+  if CopyClause <> nil then
+    CopyClause^ := e^.Copy;
+  if ReadOptions = '' then
+    Join(['select * from ', DUCKDB_FILE_READER[e^.Format], '(?)'], result)
+  else
+    Join(['select * from ', DUCKDB_FILE_READER[e^.Format], '(?, ',
+      ReadOptions, ')'], result);
+end;
+
+function TSqlDBDuckDBConnectionProperties.DoCopy(const Select: RawUtf8;
+  const Source, Dest: TFileName; const CopyOptions: RawUtf8): integer;
+var
+  clause, sql: RawUtf8;
+begin
+  FileReader(Dest, '', @clause); // validate Dest and load its extension
+  if CopyOptions <> '' then
+    Append(clause, ', ', CopyOptions);
+  sql := Join(['copy (', Select, ') to ? (', clause, ')']);
+  if Source = '' then
+    result := ExecuteNoResult(sql, [Dest])
+  else
+    result := ExecuteNoResult(sql, [Source, Dest]);
+end;
+
+function TSqlDBDuckDBConnectionProperties.FileToDocVariant(
+  const FileName: TFileName; const ReadOptions: RawUtf8): variant;
+begin
+  result := Execute(FileReader(FileName, ReadOptions),
+    [FileName]).FetchAllToDocVariantArray;
+end;
+
+function TSqlDBDuckDBConnectionProperties.ImportFile(const TableName: RawUtf8;
+  const FileName: TFileName; const ReadOptions: RawUtf8): integer;
+begin
+  result := ExecuteNoResult(Join(['create table ', TableName, ' as ',
+    FileReader(FileName, ReadOptions)]), [FileName]);
+end;
+
+function TSqlDBDuckDBConnectionProperties.ExportSql(const Sql: RawUtf8;
+  const Dest: TFileName; const CopyOptions: RawUtf8): integer;
+begin
+  result := DoCopy(Sql, '', Dest, CopyOptions);
+end;
+
+function TSqlDBDuckDBConnectionProperties.ConvertFile(
+  const Source, Dest: TFileName; const ReadOptions, CopyOptions: RawUtf8): integer;
+begin
+  result := DoCopy(FileReader(Source, ReadOptions), Source, Dest, CopyOptions);
 end;
 
 procedure TSqlDBDuckDBConnectionProperties.GetForeignKeys;
