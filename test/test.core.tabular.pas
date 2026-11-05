@@ -237,12 +237,25 @@ begin
   Check((TabularToDateTime(45000, dt) = tcValue) and (dt = 45000));
   Check(TabularToDateTime('31.01.2024', dt) = tcInvalid, 'not ISO-8601');
   Check(TabularToDateTime('', dt) = tcNull);
+  Check(TabularTextToDateTime('2024-02-29', 10, dt) and
+        (dt = EncodeDate(2024, 2, 29)), 'iso date');
+  Check(TabularTextToDateTime('2024-02-29 13:45:30', 19, dt) and
+        (DateTimeToIso8601Text(dt) = '2024-02-29T13:45:30'), 'iso with space');
+  Check(TabularTextToDateTime('2024-02-29T13:45:30.250', 23, dt), 'iso ms');
+  Check(TabularTextToDateTime('2024-02-29,next', 10, dt), 'not #0 terminated');
+  Check(not TabularTextToDateTime('2024-13-01', 10, dt), 'invalid month');
+  Check(not TabularTextToDateTime('2024-02-30', 10, dt), 'invalid day');
+  Check(not TabularTextToDateTime('31.01.2024', 10, dt), 'not iso');
+  Check(not TabularTextToDateTime('2024-02-29x', 11, dt), 'trailing char');
+  Check(not TabularTextToDateTime('20240229', 8, dt), 'compact iso refused');
 end;
 
 procedure TTestCoreTabular.CsvReading;
 var
   c: TCsvDocument;
   v: variant;
+  row: PDocVariantData;
+  dt: TDateTime;
 begin
   // RFC 4180 section 2 examples
   CheckEqual(CsvToJson('aaa,bbb,ccc'#13#10'zzz,yyy,xxx'#13#10, []),
@@ -272,6 +285,20 @@ begin
     '12345678901234567890,-,1.5e', [tboGuessTypes]),
     '[[1,-2,3.5,1000,"007","42",true,false,"1.2.3","12345678901234567890",' +
     '"-","1.5e"]]', 'guess types');
+  v := CsvToVariant('d,t,q,x'#13#10'2024-02-29,2024-02-29 13:45:30,' +
+    '"2024-03-01",2024-02-30', [tboHeader, tboGuessTypes]);
+  row := _Safe(_Safe(v)^.Values[0]);
+  Check(TabularIsDate(row^.Value['d'], dt) and (dt = EncodeDate(2024, 2, 29)),
+    'guess iso date');
+  Check(TabularIsDate(row^.Value['t'], dt) and // x87 extended: no exact =
+    (Abs(dt - (EncodeDate(2024, 2, 29) + EncodeTime(13, 45, 30, 0))) <
+       1 / MSecsPerDay), 'guess iso time');
+  Check(not TabularIsDate(row^.Value['q'], dt), 'quoted date is text');
+  CheckEqual(row^.U['x'], '2024-02-30', 'invalid date is text');
+  CheckEqual(VariantToCsv(v), 'd,t,q,x'#13#10'2024-02-29,2024-02-29T13:45:30,' +
+    '2024-03-01,2024-02-30'#13#10, 'dates written back as iso');
+  CheckEqual(CsvToJson('d'#13#10'2024-02-29 13:45:30', [tboGuessTypes,
+    tboDateAsText]), '[["d"],["2024-02-29 13:45:30"]]', 'date as text untouched');
   CheckEqual(CsvToJson('a,b'#13#10',x', [tboHeader, tboEmptyAsNull]),
     '[{"a":null,"b":"x"}]', 'empty as null');
   CheckEqual(CsvToJson('a,b'#13#10'"",x', [tboHeader, tboEmptyAsNull]),
@@ -473,6 +500,8 @@ var
   x: TXlsxDocument;
   v, w: variant;
   bin: RawByteString;
+  row: PDocVariantData;
+  dt: TDateTime;
 begin
   v := _JsonFast('[{"Name":"M\u00fcller","Age":42,"Price":3.25,"Ok":true},' +
     '{"Name":"a \"q\" <b> & _x0041_ \u0001ctl","Age":-7,"Price":1e-3,' +
@@ -494,6 +523,20 @@ begin
       '"Big":null},' +
       '{"Name":" lead","Age":null,"Price":null,"Ok":null,"When":null,' +
       '"Extra":null,"Big":1234567890123456}]'), 'xlsx round-trip');
+    // ISO-8601 text (e.g. from JSON or a SQL query) written as date cells
+    x.Options := [tboHeader, tboGuessTypes];
+    bin := x.Save(_JsonFast('[{"d":"2024-02-29","t":"2024-02-29T13:45:30",' +
+      '"s":"2024-13-01"}]'));
+    x.Options := [tboHeader];
+    x.Load(bin, w);
+    row := _Safe(_Safe(w)^.Values[0]);
+    Check(TabularIsDate(row^.Value['d'], dt) and (dt = EncodeDate(2024, 2, 29)),
+      'iso text as date cell');
+    Check(TabularIsDate(row^.Value['t'], dt) and
+      (DateTimeToIso8601Text(dt) = '2024-02-29T13:45:30'),
+      'iso text as date time cell'); // serial double: compare at second level
+    CheckEqual(row^.U['s'], '2024-13-01', 'invalid date stays text');
+    x.Options := [tboHeader, tboEmptyAsNull];
     // several sheets as a TDocVariant object, with sanitized names
     bin := x.Save(_JsonFast('{"Sales/2024":[{"a":1}],"Sales/2024 ":[[1,2],[3]],' +
       '"[]":[]}'));

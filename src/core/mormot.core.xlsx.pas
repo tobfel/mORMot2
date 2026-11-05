@@ -1179,8 +1179,16 @@ var
   istext: boolean;
   dt: TDateTime;
   w: integer;
+  dv: TVarData;
 begin
   vd := VarDataFromVariant(Value);
+  if (vd^.VType = varString) and
+     (tboGuessTypes in fOptions) and
+     TabularTextToDateTime(vd^.VAny, length(RawUtf8(vd^.VAny)), dv.VDate) then
+  begin
+    dv.VType := varDate; // ISO-8601 text written as a date cell
+    vd := @dv;
+  end;
   if IsNumber(vd) then
   begin
     // write the number directly, with no temporary string

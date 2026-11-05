@@ -38,9 +38,9 @@ Copy the `mormot.core.*` units to `mORMot2/src/core/` and the `mormot.db.*` unit
 | `tboHeader` | first row = column names (default) |
 | `tboSkipEmptyRows` | ignore empty rows (default) |
 | `tboTrimValues` | trim leading/trailing spaces |
-| `tboGuessTypes` | CSV: unquoted values -> integer/float/boolean following the JSON syntax. `"007"` and `007` stay text, 20-digit IDs too (no precision loss) |
+| `tboGuessTypes` | CSV: unquoted values -> integer/float/boolean following the JSON syntax, and strict ISO 8601 dates (`2024-01-31`, `2024-01-31T12:30:00`, `2024-01-31 12:30:00`) -> `varDate`. `"007"` and `007` stay text, 20-digit IDs too (no precision loss). XLSX writing: ISO 8601 text values (e.g. from JSON or a SQL query) are written as date cells |
 | `tboEmptyAsNull` | empty cells -> `null`; in CSV, `""` stays an empty string so that `null`/`''` survive a round trip |
-| `tboDateAsText` | XLSX date values as ISO 8601 text instead of `varDate` |
+| `tboDateAsText` | XLSX date values as ISO 8601 text instead of `varDate`; CSV date text is kept as is |
 
 Plus: `DocOptions` (default `JSON_FAST_FLOAT`), `MaxRows`, `DecimalSeparator` (e.g. `','` for German Excel CSV), `Columns`.
 
@@ -283,7 +283,7 @@ The excel/spatial extensions are `LOAD`ed on first use: they must have been inst
 
 Use `mormot.core.csv/xlsx` for in-memory data (HTTP body, ORM/TDocVariant export) and with no 60 MB library dependency: it is faster as soon as rows go through a TDocVariant, and its XLSX code is faster than the DuckDB `excel` extension. Use DuckDB to import files into tables (9x faster, typed columns), for Parquet/JSON/ODS, for files larger than RAM, globs (`*.csv`), remote files (`httpfs`) or SQL filtering/aggregation during a conversion. More threads made no difference at this size. On a slower VM, all timings were about 2x higher with the same ratios.
 
-Type differences: DuckDB detects DATE columns in CSV (tabular keeps them as text unless parsed later), but returns all XLSX numbers as DOUBLE (tabular keeps integers). `TabularToSqlDB` creates booleans as BIGINT 0/1 and up-to-4-decimals floats as `DECIMAL(19,4)`, following the `TSqlDBFieldType` mapping.
+Type differences: both detect ISO 8601 DATE columns in CSV (tabular with `tboGuessTypes`), but DuckDB returns all XLSX numbers as DOUBLE (tabular keeps integers). DuckDB returns DATE values as ISO 8601 text in a TDocVariant: save them with `tboGuessTypes` to get XLSX date cells. `TabularToSqlDB` creates booleans as BIGINT 0/1 (there is no boolean `TSqlDBFieldType`; `TDocVariantData.B[]` reads them back as booleans), and up-to-4-decimals numbers as `DECIMAL(19,4)`: the mORMot JSON parser returns them as exact `currency` values, so `79.19` is stored exactly - DuckDB just displays it as `79.1900`.
 
 ## Notes and limits
 

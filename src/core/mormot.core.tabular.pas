@@ -52,8 +52,10 @@ type
   // - tboSkipEmptyRows: ignore rows with no (or only empty) cell when reading
   // - tboTrimValues: trim leading/trailing spaces of text values when reading
   // - tboGuessTypes: text values are converted into integer/float/boolean
-  // variants when they match the JSON number or true/false syntax - quoted
-  // CSV fields and XLSX text cells are never converted
+  // variants when they match the JSON number or true/false syntax, and into
+  // varDate for strict ISO-8601 text (see TabularTextToDateTime) - quoted
+  // CSV fields and XLSX text cells are never converted; when writing XLSX,
+  // ISO-8601 text values are written as date cells
   // - tboEmptyAsNull: empty cells are returned as null instead of ''
   // - tboDateAsText: date/time cells (e.g. from XLSX) are returned as
   // ISO-8601 text instead of varDate variants
@@ -263,6 +265,14 @@ function TabularToInt64(const Value: variant; out Dest: Int64): TTabularConversi
 /// convert a cell value (number, boolean or number text) into a double
 function TabularToDouble(const Value: variant; out Dest: double): TTabularConversion;
 
+/// recognize a strict ISO-8601 date or date/time text buffer
+// - 'YYYY-MM-DD', 'YYYY-MM-DDThh:mm:ss[.sss]' or 'YYYY-MM-DD hh:mm:ss[.sss]'
+// with a valid date, as accepted by Iso8601CheckAndDecode()
+// - P^ does not need to be #0 terminated
+// - this is the date detection used by tboGuessTypes for all tabular formats
+function TabularTextToDateTime(P: PUtf8Char; Len: PtrInt;
+  out Value: TDateTime): boolean;
+
 /// convert a cell value (varDate, number or ISO-8601 text) into a TDateTime
 function TabularToDateTime(const Value: variant; out Dest: TDateTime): TTabularConversion;
 
@@ -415,6 +425,27 @@ begin
   if (result = tcValue) and
      not VariantToDouble(PVariant(n)^, Dest) then
     result := tcInvalid;
+end;
+
+function TabularTextToDateTime(P: PUtf8Char; Len: PtrInt;
+  out Value: TDateTime): boolean;
+var
+  tmp: array[0..23] of AnsiChar;
+begin
+  result := false;
+  if (Len < 10) or
+     (Len > high(tmp)) or
+     (P[4] <> '-') then
+    exit; // fast exit for most text values
+  if (Len >= 19) and
+     (P[10] = ' ') then
+  begin
+    // 'YYYY-MM-DD hh:mm:ss' is common in CSV: normalize as 'YYYY-MM-DDThh:mm:ss'
+    MoveFast(P^, tmp, Len);
+    tmp[10] := 'T';
+    P := @tmp;
+  end;
+  result := Iso8601CheckAndDecode(P, Len, Value);
 end;
 
 function TabularToDateTime(const Value: variant; out Dest: TDateTime): TTabularConversion;
@@ -694,6 +725,7 @@ procedure TTabularDocument.ReadCellBuffer(P: PUtf8Char; Len: PtrInt;
   GuessType: boolean; Source: PRawUtf8);
 var
   v: PVariant;
+  dt: TDateTime;
 begin
   if tboTrimValues in fOptions then
   begin
@@ -722,6 +754,12 @@ begin
              IdemPChar(P, 'FALSE')) then
     begin
       ReadCellValue(Len = 4);
+      exit;
+    end
+    else if not (tboDateAsText in fOptions) and
+            TabularTextToDateTime(P, Len, dt) then
+    begin
+      ReadCellDateTime(dt);
       exit;
     end;
   v := NewCell;
