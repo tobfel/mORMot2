@@ -4907,6 +4907,9 @@ end;
 procedure THttpAsyncServerConnection.HttpInit;
 begin
   fHttp.ProcessInit; // ready to process a new HTTP request
+  // fHttp.Reset did clear the options of the previous request on this
+  // kept-alive connection, e.g. hroHeadersUnfiltered from hsoHeadersUnfiltered
+  fHttp.Options := fServer.fDefaultRequestOptions;
   fHeadersSec := 0;
   fBytesRecv := 0; // reset stats
   fBytesSend := 0;
@@ -4918,7 +4921,6 @@ begin
   fHttp.Interning := fServer.fInterning;
   if fServer.fCompressList.Algo <> nil then
     fHttp.CompressList := @fServer.fCompressList;
-  fHttp.Options := fServer.fDefaultRequestOptions;
   if fServer.fServerKeepAliveTimeOutSec <> 0 then // 0 = no keep alive
     fKeepAliveMaxSec := fServer.Async.fLastOperationSec +
                         fServer.fServerKeepAliveTimeOutSec;
@@ -5133,6 +5135,15 @@ begin
   result := soClose; // on error, shutdown and clear the connection
   if fOwner.fSockets = nil then
     fHttp.State := hrsErrorMisuse;
+  if fHttp.State in [hrsGetBodyChunkedHexFirst .. hrsWaitAsyncProcessing] then
+  begin
+    // the request is still being received or processed, so this write can
+    // only be the end of the "100 Continue" interim response, when DoHeaders
+    // could not send it at once: nothing to release yet - the final response
+    // will trigger its own AfterWrite()
+    result := soContinue;
+    exit;
+  end;
   // compute next step
   if fHttp.State = hrsSendBody then
   begin
@@ -5305,14 +5316,17 @@ begin
     include(fHttp.ResponseFlags, rfContentStreamNeedFree);
     if strm.InheritsFrom(TFileStreamEx) then
       fHttp.SetContentInputName(TFileStreamEx(strm));
-    // needed to track and limit the cumulated chunked body size
-    fHttp.ContentMaxSize := fServer.MaximumAllowedContentLength;
   end;
 end;
+
+const
+  HTTP_CONTINUE_RESPONSE: TShort31 = 'HTTP/1.1 100 Continue'#13#10#13#10;
 
 function THttpAsyncServerConnection.DoHeaders: TPollAsyncSocketOnReadWrite;
 var
   status: integer;
+  p: PByte;
+  len: integer; // warning: len should be defined as integer, not PtrInt
 begin
   // finalize the headers
   result := soClose;
@@ -5337,10 +5351,31 @@ begin
     exit;
   // implement Expect: 100-Continue for a framed request body
   if hfExpect100 in fHttp.HeaderFlags then
+  begin
     // client waits for the server to parse the headers and return 100
-    // before sending the request body
-    fServer.fAsync.fSockets.WriteString(self,
-      'HTTP/1.1 100 Continue'#13#10#13#10);
+    // before sending the request body: send this interim response at once
+    // from this thread, as DoResponse() does for the final response, so that
+    // it is never pending behind the final response (e.g. with acoWritePollOnly
+    // when the client sends the body without waiting), and AfterWrite() is
+    // not called for it
+    p := @HTTP_CONTINUE_RESPONSE[1];
+    len := ord(HTTP_CONTINUE_RESPONSE[0]);
+    if not fServer.fAsync.fSockets.RawWrite(self, p, len) then
+    begin
+      result := soClose; // socket closed or broken
+      exit;
+    end;
+    if (len <> 0) and // OS buffer was full (paranoid): finish in ProcessWrite
+       not fServer.fAsync.fSockets.Write(self, p, len, {timeout=}1000) then
+    begin
+      result := soClose; // the connection was already closed on write error
+      exit;
+    end;
+  end;
+  // track and limit the cumulated size of a chunked body - whatever the method
+  // and whether OnBodyDownload supplies a stream for it or not: the header
+  // check above only applies to an explicit Content-Length
+  fHttp.ContentMaxSize := fServer.MaximumAllowedContentLength;
   // OnBodyDownload callback can supply a stream for the body - even for HEAD
   if not (hfConnectionUpgrade in fHttp.HeaderFlags) and
      Assigned(fServer.fOnBodyDownload) then
