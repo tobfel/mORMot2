@@ -1606,11 +1606,116 @@ procedure TTestQuack.DuckDBServer;
 var
   server: TSqlDBDuckDBConnectionProperties;
   client: TSqlDBQuackConnectionProperties;
-  rows: ISqlDBRows;
   ok: boolean;
-  i: integer;
   err: string;
-  st: ISqlDBStatement;
+
+  procedure DoTests;
+  var
+    rows: ISqlDBRows;
+    st: ISqlDBStatement;
+    i: integer;
+  begin
+    rows := client.Execute('select * from qt order by id', []);
+    i := 0;
+    while rows.Step do
+    begin
+      CheckEqual(rows.ColumnInt(0), i);
+      CheckEqual(rows.ColumnUtf8(1), FormatUtf8('name %', [i]));
+      CheckEqual(rows.ColumnUtf8(3), FormatUtf8('[%,%]', [i, i + 1]));
+      inc(i);
+    end;
+    CheckEqual(i, 5000, 'all rows');
+    rows := nil;
+    CheckEqual(client.ExecuteNoResult(
+      'update qt set name = ? where id < ?', ['x', 10]), 10);
+    // parameters, transactions and errors
+    client.ExecuteNoResult('create table qp(id integer, name varchar, ' +
+      'amount decimal(19,4), born timestamp, photo blob, ratio double)', []);
+    st := client.NewThreadSafeStatementPrepared(
+      'insert into qp values (?,?,?,?,?,?)', false, true);
+    st.Bind(1, 1);
+    st.BindTextU(2, 'O''Neil ? -- "x" \n');
+    st.BindCurrency(3, 1234.5678);
+    st.BindDateTime(4, EncodeDate(2001, 2, 3) + EncodeTime(4, 5, 6, 789));
+    st.BindBlob(5, Bytes([0, 1, ord(''''), ord('\'), 255])); //  #0#1'''\'#255
+    st.Bind(6, 0.1);
+    st.ExecutePrepared;
+    CheckEqual(st.UpdateCount, 1);
+    st := nil;
+    rows := client.Execute('select * from qp where id = ?', [1]);
+    Check(rows.Step);
+    CheckEqual(rows.ColumnUtf8(1), 'O''Neil ? -- "x" \n');
+    CheckEqual(CurrencyToStr(rows.ColumnCurrency(2)), '1234.5678', 'cur');
+    CheckEqual(DateTimeToIso8601(rows.ColumnDateTime(3), true, 'T', true),
+      '2001-02-03T04:05:06.789');
+    CheckEqual(BinToHexLower(rows.ColumnBlob(4)), '0001275cff');
+    CheckEqual(DoubleToStr(rows.ColumnDouble(5)), '0.1', 'dbl');
+    rows := nil;
+    client.ThreadSafeConnection.StartTransaction;
+    client.ExecuteNoResult('delete from qp', []);
+    client.ThreadSafeConnection.Rollback;
+    rows := client.Execute('select count(*) from qp', []);
+    Check(rows.Step);
+    CheckEqual(rows.ColumnInt(0), 1, 'rollback');
+    rows := nil;
+    try
+      client.ExecuteNoResult('select * from missing_table', []);
+      Check(false, 'error');
+    except
+      on E: ESqlDBQuack do
+        Check(Pos('missing_table does not exist', E.Message) > 0, E.Message);
+    end;
+    // a result released before its end does not break the next queries
+    rows := client.Execute('select * from range(100000)', []);
+    Check(rows.Step);
+    rows.ReleaseRows;
+    rows := nil;
+    rows := client.Execute('select 42', []);
+    Check(rows.Step);
+    CheckEqual(rows.ColumnInt(0), 42);
+    rows := nil;
+    // all types should be identical to the embedded engine
+    CompareToEmbedded(server, client,
+      'select i, true b, (i % 100 - 50)::tinyint ti, (i - 2500)::smallint si, ' +
+      '-i * 1000::integer ii, i * 123456789012::bigint bi, (i % 256)::utinyint u1, ' +
+      '(i * 7)::usmallint u2, (i * 100000)::uinteger u3, ' +
+      '(i * 1000000000000)::ubigint u4, (i * 1000000000000000000000)::hugeint h, ' +
+      '(i / 3.0)::float f, (i / 7.0)::double d, (i / 8.0)::decimal(10,2) dec1, ' +
+      '(i * 1234567890123456789.12345)::decimal(30,5) dec2, ' +
+      '(i % 100 / 4.0)::decimal(4,1) dec3, ' +
+      '''text '' || i s, case when i % 3 = 0 then null else ''é€ '' || i end u, ' +
+      'repeat(''const'', 2) c, ''\xAA\xBB''::blob bl, ' +
+      'date ''2024-02-29'' + cast(i % 1000 as integer) dt, ' +
+      'time ''12:34:56.789'' tm, ' +
+      'timestamp ''2024-02-29 12:34:56.123456'' + to_seconds(i) ts, ' +
+      'timestamptz ''2024-02-29 12:34:56+00'' tz, ' +
+      'to_months(i % 20) + to_days(i % 5) iv, ' +
+      'uuid() = uuid() eq, gen_random_uuid() is not null ug, ' +
+      '[i, i + 1, null] l, [[i], [i, i], []] ll, {''a'': i, ''b'': ''x'' || i} st, ' +
+      'map {''k'': i} m, [i, i + 1]::integer[2] ar, null::integer n, ' +
+      'case when i % 2 = 0 then 1 else null end::union(a integer, b varchar) un ' +
+      'from range(5000) t(i)');
+    // VARIANT columns, including nested ones, are retrieved as JSON
+    if DuckDB.Version >= 'v2' then
+    begin
+      rows := client.Execute('select {''a'': 1, ''l'': [1, null]}::variant v', []);
+      Check(rows.Step);
+      CheckEqual(rows.ColumnUtf8(0), '{"a":1,"l":[1,null]}', 'variant');
+      rows := nil;
+      CompareToEmbedded(server, client,
+        'select i, case when i % 3 = 0 then null::variant when i % 3 = 1 ' +
+        'then {''a'': i, ''l'': [i, null]}::variant else (''s'' || i)::variant ' +
+        'end v, [i::variant] lv from range(5000) t(i)');
+    end;
+    // types with nanoseconds resolution and GEOMETRY, as WKB
+    if DuckDB.Version >= 'v2' then
+      CompareToEmbedded(server, client,
+        'select i, timestamp_ns ''2024-02-29 12:34:56.123456789'' + ' +
+        'to_seconds(i) tns, (timestamp_ns ''2024-02-29 12:34:56.123456789'' + ' +
+        'to_seconds(i))::timestamptz_ns tzns, (''POINT('' || i || '' 2)'')::geometry g ' +
+        'from range(5000) t(i)');
+  end;
+
 begin
   // requires the local 64-bit DuckDB library, and the quack extension
   if not FileExists(Executable.ProgramFilePath + DuckDBLibraryName) then
@@ -1651,105 +1756,8 @@ begin
     client := TSqlDBQuackConnectionProperties.Create(
       'quack:127.0.0.1:9498', '', '', 'secret');
     try
-      rows := client.Execute('select * from qt order by id', []);
-      i := 0;
-      while rows.Step do
-      begin
-        CheckEqual(rows.ColumnInt(0), i);
-        CheckEqual(rows.ColumnUtf8(1), FormatUtf8('name %', [i]));
-        CheckEqual(rows.ColumnUtf8(3), FormatUtf8('[%,%]', [i, i + 1]));
-        inc(i);
-      end;
-      CheckEqual(i, 5000, 'all rows');
-      rows := nil;
-      CheckEqual(client.ExecuteNoResult(
-        'update qt set name = ? where id < ?', ['x', 10]), 10);
-      // parameters, transactions and errors
-      client.ExecuteNoResult('create table qp(id integer, name varchar, ' +
-        'amount decimal(19,4), born timestamp, photo blob, ratio double)', []);
-      st := client.NewThreadSafeStatementPrepared(
-        'insert into qp values (?,?,?,?,?,?)', false, true);
-      st.Bind(1, 1);
-      st.BindTextU(2, 'O''Neil ? -- "x" \n');
-      st.BindCurrency(3, 1234.5678);
-      st.BindDateTime(4, EncodeDate(2001, 2, 3) + EncodeTime(4, 5, 6, 789));
-      st.BindBlob(5, Bytes([0, 1, ord(''''), ord('\'), 255])); //  #0#1'''\'#255
-      st.Bind(6, 0.1);
-      st.ExecutePrepared;
-      CheckEqual(st.UpdateCount, 1);
-      st := nil;
-      rows := client.Execute('select * from qp where id = ?', [1]);
-      Check(rows.Step);
-      CheckEqual(rows.ColumnUtf8(1), 'O''Neil ? -- "x" \n');
-      CheckEqual(CurrencyToStr(rows.ColumnCurrency(2)), '1234.5678', 'cur');
-      CheckEqual(DateTimeToIso8601(rows.ColumnDateTime(3), true, 'T', true),
-        '2001-02-03T04:05:06.789');
-      CheckEqual(BinToHexLower(rows.ColumnBlob(4)), '0001275cff');
-      CheckEqual(DoubleToStr(rows.ColumnDouble(5)), '0.1', 'dbl');
-      rows := nil;
-      client.ThreadSafeConnection.StartTransaction;
-      client.ExecuteNoResult('delete from qp', []);
-      client.ThreadSafeConnection.Rollback;
-      rows := client.Execute('select count(*) from qp', []);
-      Check(rows.Step);
-      CheckEqual(rows.ColumnInt(0), 1, 'rollback');
-      rows := nil;
-      try
-        client.ExecuteNoResult('select * from missing_table', []);
-        Check(false, 'error');
-      except
-        on E: ESqlDBQuack do
-          Check(Pos('missing_table does not exist', E.Message) > 0, E.Message);
-      end;
-      // a result released before its end does not break the next queries
-      rows := client.Execute('select * from range(100000)', []);
-      Check(rows.Step);
-      rows.ReleaseRows;
-      rows := nil;
-      rows := client.Execute('select 42', []);
-      Check(rows.Step);
-      CheckEqual(rows.ColumnInt(0), 42);
-      rows := nil;
-      // all types should be identical to the embedded engine
-      CompareToEmbedded(server, client,
-        'select i, true b, (i % 100 - 50)::tinyint ti, (i - 2500)::smallint si, ' +
-        '-i * 1000::integer ii, i * 123456789012::bigint bi, (i % 256)::utinyint u1, ' +
-        '(i * 7)::usmallint u2, (i * 100000)::uinteger u3, ' +
-        '(i * 1000000000000)::ubigint u4, (i * 1000000000000000000000)::hugeint h, ' +
-        '(i / 3.0)::float f, (i / 7.0)::double d, (i / 8.0)::decimal(10,2) dec1, ' +
-        '(i * 1234567890123456789.12345)::decimal(30,5) dec2, ' +
-        '(i % 100 / 4.0)::decimal(4,1) dec3, ' +
-        '''text '' || i s, case when i % 3 = 0 then null else ''é€ '' || i end u, ' +
-        'repeat(''const'', 2) c, ''\xAA\xBB''::blob bl, ' +
-        'date ''2024-02-29'' + cast(i % 1000 as integer) dt, ' +
-        'time ''12:34:56.789'' tm, ' +
-        'timestamp ''2024-02-29 12:34:56.123456'' + to_seconds(i) ts, ' +
-        'timestamptz ''2024-02-29 12:34:56+00'' tz, ' +
-        'to_months(i % 20) + to_days(i % 5) iv, ' +
-        'uuid() = uuid() eq, gen_random_uuid() is not null ug, ' +
-        '[i, i + 1, null] l, [[i], [i, i], []] ll, {''a'': i, ''b'': ''x'' || i} st, ' +
-        'map {''k'': i} m, [i, i + 1]::integer[2] ar, null::integer n, ' +
-        'case when i % 2 = 0 then 1 else null end::union(a integer, b varchar) un ' +
-        'from range(5000) t(i)');
-      // VARIANT columns, including nested ones, are retrieved as JSON
-      if DuckDB.Version >= 'v2' then
-      begin
-        rows := client.Execute('select {''a'': 1, ''l'': [1, null]}::variant v', []);
-        Check(rows.Step);
-        CheckEqual(rows.ColumnUtf8(0), '{"a":1,"l":[1,null]}', 'variant');
-        rows := nil;
-        CompareToEmbedded(server, client,
-          'select i, case when i % 3 = 0 then null::variant when i % 3 = 1 ' +
-          'then {''a'': i, ''l'': [i, null]}::variant else (''s'' || i)::variant ' +
-          'end v, [i::variant] lv from range(5000) t(i)');
-      end;
-      // types with nanoseconds resolution and GEOMETRY, as WKB
-      if DuckDB.Version >= 'v2' then
-        CompareToEmbedded(server, client,
-          'select i, timestamp_ns ''2024-02-29 12:34:56.123456789'' + ' +
-          'to_seconds(i) tns, (timestamp_ns ''2024-02-29 12:34:56.123456789'' + ' +
-          'to_seconds(i))::timestamptz_ns tzns, (''POINT('' || i || '' 2)'')::geometry g ' +
-          'from range(5000) t(i)');
+      // local sub-procedure to ensure all local interfaces are cleared
+      DoTests;
     finally
       client.Free;
     end;
