@@ -26,6 +26,18 @@ the code was correct and well tested and *looked* like mORMot, but on closer loo
   internal scale parameter) instead of generic, slow arithmetic.
 - **No `packed record`** for C API struct mirrors unless the C side is packed: it is much
   slower on arm32/aarch64 and can break alignment.
+- **Fix compiler limitations at the type, not at every call site.** From ab's Delphi 7 fix
+  of `TDuckDBTypeInfo` (d7cabac66, 2026-11-03): a record cannot hold `array of itself` on
+  Delphi 7. Our fix (`Child: pointer` + `TDuckDBTypeInfoDynArray(...)` casts in every unit)
+  was rejected in favor of a forward-declared typed pointer
+  `PDuckDBTypeInfoArray = ^array[word] of TDuckDBTypeInfo` + explicit `ChildCount` +
+  `AllocMem`/`FreeMem`: callers keep `T^.Child[i]`, no casts, no dynarray-header hacks.
+  With manual memory, finalize managed fields yourself (`Names := nil` for nested levels).
+- **Records with methods, Delphi 7 style:** `{$ifdef USERECORDWITHMETHODS} record {$else}
+  object {$endif}` with `Init`/`Done`/accessor methods instead of global
+  `XxxInit(var Info)`/`XxxDone(var Info)` functions.
+- **Delphi 7 idioms:** no `PByte` arithmetic - write `@PByteArray(p)^[1]`; reuse
+  `THash128Rec` (`L`/`H`/`c[]`) for 128-bit math instead of a private limb type.
 - **Benchmark against the naive path** before keeping an "optimization" or a convenience
   feature. Example: DuckDB `BindArray` still executed one statement per row and was slower
   than plain inserts - pure bloat. Prefer the mechanisms the ORM already uses
