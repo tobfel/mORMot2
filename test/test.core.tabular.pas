@@ -256,6 +256,7 @@ var
   v: variant;
   row: PDocVariantData;
   dt: TDateTime;
+  csv: RawUtf8;
 begin
   // RFC 4180 section 2 examples
   CheckEqual(CsvToJson('aaa,bbb,ccc'#13#10'zzz,yyy,xxx'#13#10, []),
@@ -310,7 +311,10 @@ begin
     '[{"a":"1","a_2":"2","Col3":"3","b":"4","Col5":"5"},' +
     '{"a":"6","a_2":"","Col3":"","b":""}]', 'ragged rows and unique names');
   // delimiters, BOM, encodings
-  CheckEqual(CsvToJson(HexToBin('efbbbf') + 'x;y'#13#10'1;2', [tboHeader], ';'),
+  // raw BOM bytes with no "+" to a literal, i.e. no code page conversion
+  PCardinal(FastSetString(csv, 3))^ := BOM_UTF8; // includes the ending #0
+  Append(csv, 'x;y'#13#10'1;2');
+  CheckEqual(CsvToJson(csv, [tboHeader], ';'),
     '[{"x":"1","y":"2"}]', 'utf-8 bom + semicolon');
   CheckEqual(CsvToJson('x'#9'y'#13#10'1'#9'2', [tboHeader], #0),
     '[{"x":"1","y":"2"}]', 'auto-detect tab');
