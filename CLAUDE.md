@@ -145,6 +145,70 @@ are released!")
 #0 termination, Delphi compilation). After each refactoring pass, compile with Delphi and
 FPC and run the tests of the unit before the next pass.
 
+## Code quality: lessons from ab's hardening pass (2026-11-06/07)
+
+From `31689eed5`, `23b709e4b`, `77c73fe68`, `013da880b`, `02bdc1671` (buffer overflows),
+`610a95a23` (YAML), `8dae860bc` (Quack mock rewrite), `73ba52a40`/`282c8626a`/`42fd010b8`
+(refactoring of contributor DHCP PRs), `b520475df`, `bc82aa795`, `da3cc68e4`, `6b5fac715`.
+
+**TTextWriter buffer safety**
+- `AddShort(P, Len)` only when `Len <= 255` is guaranteed by construction (literal tokens,
+  numbers formatted into a local `ShortString`). Any length coming from input - JSON
+  tokens/numbers, property or column names, DB values (PostgreSQL numeric/JSONB), HTTP
+  headers (an IP from an nginx header), separators, macro expansions - uses
+  `AddNoJsonEscape(P, Len)`. ab fixed 10+ such call sites in one pass.
+- `AddDirect()` writes without a capacity check: only right after something that
+  reserved room. For data-driven single chars write `Add(c)`.
+- Never peek `W.B^` to test the last written char (dereferences an empty buffer): use
+  `W.LastChar`.
+- Document honest limits on validators (`IsValidJson` "is not a full RFC 8259 validation").
+
+**Parsers of untrusted input**
+- Count recursion depth on *every* recursive path (also compact `- - x` sequences and
+  implicit `- key: v` mappings), not only on the main one; raise a clear error at the max.
+- A quoted token must be consumed completely: reject trailing text after the closing
+  quote instead of emitting it verbatim as JSON.
+- Do not mix a relative pointer and 1-based string indexes (`p[cut - 1]` vs `S[cut]`).
+
+**Binary encoding (protocols, test mocks)**
+- Generate binary with a `TBufferWriter` (subclass it for a protocol: `Write1/2/4`,
+  `WriteVarUInt64` = unsigned LEB128, `WriteVarLeb64` = signed LEB128, `FlushTo`), never
+  with `RawByteString` concatenation of helper results: codepage handling differs between
+  Delphi and FPC, and it is slower. Do not hand-roll varint encoders that exist already.
+
+**Small idioms**
+- Shrinking a string in place: `FakeLength(s, newlen)`, not `SetLength`.
+- Growing a pointer/object array with a separate count: `PtrArrayAdd(arr, item, count)`
+  instead of manual capacity arithmetic.
+- In tests, build a binary buffer with `p := FastNewRawByteString(s, len)` and move `p`
+  (`inc(p, $80)`, `PCardinal(p + $98)^`), not repeated `PByteArray(s)[$80 + ofs]`.
+
+**Platform conditionals**
+- Express a *capability*, not an OS: add `{$define HAS_xxx}` in `mormot.defines.inc`
+  (e.g. `HAS_IP_PKTINFO`) and, if needed, a unit-local define (`DHCP_IFINDEX`) with a
+  comment listing per-OS behavior, instead of scattered `{$ifdef OSLINUX}`.
+- Compile out fields, types and methods that a platform does not need; keep both
+  branches compiling and tested (ab's own refactor shipped `if p = nil then p^.x`,
+  fixed in the next commit `8ddfa2777`).
+- Missing POSIX constants for Delphi go to `mormot.core.os.delphi.pas`, not a local
+  `const` in a net unit.
+
+**Locking and threads**
+- Under a read lock, look up and return a *pointer* into the array (caller holds the
+  lock; check the first entry as the common fast path) instead of copying a record out
+  in a `try..finally` per frame.
+- A rejection from the remote side in a background/WebSocket thread must not raise there
+  (caused an infinite reconnect loop): wake the waiting caller, log `sllWarning`, and
+  call an optional `OnXxxError` event.
+
+**Exceptions and tests**
+- Raise the exception class of the unit's own scope (`ESynCrypto` in mormot.crypt.secure,
+  not the catalog's `ECrypt`), and keep `///` comments naming it in sync.
+- Expected exceptions in tests: set `TSynLog.Family.ExceptionIgnoreCurrentThread := true`
+  or `ExceptionIgnore.Add(E)` *before* the code that raises, and `Remove(E)` afterwards;
+  comment when the caller already did it. Fetch per-thread state (`ThreadRandom`) right
+  where it is used.
+
 ## mORMot defaults (details: `docs/mORMot2-SAD-Recommended-Patterns.md`, Part A.1/A.2)
 
 - Use the framework types on every path it serializes: `RawUtf8` (not `string`),
