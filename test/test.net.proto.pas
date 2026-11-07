@@ -174,6 +174,8 @@ type
     function DoKeepAliveOptionsRequest(Ctxt: THttpServerRequestAbstract): cardinal;
     /// validate that THttpAsyncServer rejects an endless header or chunk line
     procedure DoHttpLongLine(Sender: TObject);
+    /// validate clean start/shutdown of several DHCP servers
+    procedure DoDhcpServerShutdown(Sender: TObject);
   published
     {$ifdef USEWININET}
     /// validate lazy initialization of the http.sys WebSocket API
@@ -2487,6 +2489,81 @@ begin
     end;
 end;
 
+
+procedure TNetworkProtocols.DoDhcpServerShutdown;
+var
+  mac: TMacAddress;
+  settings: TDhcpServerSettings;
+  scope: TDhcpScopeSettings;
+  server: TDhcpServer;
+  probe: TNetSocket;
+  addr: TNetAddr;
+  port: RawUtf8;
+  i, n: integer;
+
+  function PortCanBind: boolean;
+  var
+    s: TNetSocket;
+  begin
+    result := NewSocket(mac.IP, port, nlUdp,
+                {bind=}true, 100, 100, 100, 0, s) = nrOk;
+    if s <> nil then
+      s.ShutdownAndClose(false);
+  end;
+
+begin
+  if not GetMainMacAddress(mac, [mafRequireBroadcast]) then
+  begin
+    AddConsole('DHCP socket test skipped: no suitable interface');
+    exit;
+  end;
+  // Ask the OS to select an available port.
+  probe := nil;
+  Check(NewSocket(cAnyHost, '0', nlUdp, {bind=}true, 100, 100, 100, 0,
+    probe, @addr) = nrOk, 'ephemeral UDP bind');
+  if probe = nil then
+    exit;
+  port := UInt32ToUtf8(addr.Port);
+  probe.ShutdownAndClose(false);
+  settings := TDhcpServerSettings.Create;
+  try
+    scope := settings.AddScope;
+    if not scope.From(mac) then
+    begin
+      Check(false, 'DHCP scope from interface');
+      exit;
+    end;
+    scope.ServerPort := addr.Port;
+    if fOwner.MultiThread then
+      n := 4   // quick test
+    else
+      n := 16; // default full pressure
+    for i := 1 to n do
+    begin
+      server := TDhcpServer.Create;
+      try
+        server.Setup(settings);
+        server.Bind(mac.IP);
+        // Ensure the server actually owns the port.
+        Check(not PortCanBind, 'UDP port must be occupied');
+        // Exercise explicit and implicit shutdown.
+        if i and 1 = 0 then
+        begin
+          server.Shutdown;
+          Check(PortCanBind, 'UDP port reusable after Shutdown');
+          // Shutdown must also be idempotent.
+          server.Shutdown;
+        end;
+      finally
+        server.Free;
+      end;
+      Check(PortCanBind, 'UDP port reusable after Free');
+    end;
+  finally
+    settings.Free;
+  end;
+end;
+
 const
   FND_RESP = [doSubnetMask, doLeaseTime, doMessageType,
     doServerIdentifier, doRenewalTime, doRebindingTime];
@@ -2619,6 +2696,7 @@ var
   end;
 
 begin
+  Run(DoDhcpServerShutdown, self, 'DHCPShutdown', true, false);
   rnd := ThreadRandom; // use the TLecuyer of this thread
   // validate some DHCP protocol definitions
   CheckEqual(ord(dmtTls), 18, 'dmt');
@@ -3730,6 +3808,34 @@ begin
     d.ClientFlush(f);
     Check(server.ComputeResponse(d) > 0, 'bad opt54');
     Check(d.SendType = dmtAck, 'bad opt54 type');
+    // no relay: FindScope uses ciaddr of a configured client, then RecvIp4 as
+    // the bound server IP which received the frame - not the client source IP
+    settings.AddScope(TDhcpScopeSettings.Create).SubnetMask := '10.0.0.1/24';
+    server.Setup(settings);
+    d.ClientFlush(d.ClientNew(dmtDiscover, macs[1520]));
+    d.RecvIp4 := ToIP4('10.0.0.1'); // received on the 2nd server interface
+    Check(server.ComputeResponse(d) > 0, 'scope recvip4');
+    ip4 := d.Send.yiaddr;
+    Check(server.Scope[1].Subnet.Match(ip4), 'scope recvip4 subnet');
+    d.ClientFlush(d.ClientNew(dmtRequest, macs[1520])); // RENEWING unicast
+    d.Recv.ciaddr := ip4;
+    d.RecvIp4 := ToIP4('192.168.0.1'); // routed to the 1st server interface
+    Check(server.ComputeResponse(d) > 0, 'scope ciaddr');
+    Check(d.SendType = dmtAck, 'scope ciaddr type');
+    CheckEqual(d.Send.yiaddr, ip4, 'scope ciaddr ip');
+    // no giaddr: DISCOVER ignores ciaddr and uses the receiving interface
+    d.ClientFlush(d.ClientNew(dmtDiscover, macs[1521]));
+    d.Recv.ciaddr := ToIP4('192.168.0.50');
+    d.RecvIp4 := ToIP4('10.0.0.1');
+    Check(server.ComputeResponse(d) > 0, 'scope discover');
+    Check(server.Scope[1].Subnet.Match(d.Send.yiaddr), 'scope discover subnet');
+    // no giaddr: RELEASE uses ciaddr even when received on another interface
+    d.ClientFlush(d.ClientNew(dmtRelease, macs[1520]));
+    d.Recv.ciaddr := ip4;
+    d.RecvIp4 := ToIP4('192.168.0.1');
+    CheckEqual(server.ComputeResponse(d), 0, 'scope release');
+    CheckEqual(server.Scope[1].Metrics.Current[dsmRelease], 1, 'scope release ciaddr count');
+    CheckEqual(server.Scope[0].Metrics.Current[dsmRelease], 0, 'scope release recvip4 count');
   finally
     server.Free;
     settings.Free;
@@ -3974,7 +4080,6 @@ var
   worker: TLoggedWorkThread;
   rnd: PLecuyer;
 begin
-  rnd := ThreadRandom; // use the TLecuyer of this thread
   // setup the two instances with the specified options and certificates
   TSynLogTestLog.EnterLocal(log, 'TunnelTest [%]', [ToText(tunneloptions)], self);
   clientinstance := TTunnelLocalClient.Create(TSynLog);
@@ -3984,6 +4089,7 @@ begin
   clienttunnel := clientinstance;
   servertunnel := serverinstance;
   // perform handshaking
+  rnd := ThreadRandom; // use the TLecuyer of this thread
   repeat
     sess := rnd.Next31;
   until sess <> 0;
@@ -4455,6 +4561,9 @@ end;
 procedure TNetworkProtocols.IPAddresses;
 var
   i, n, n2: PtrInt;
+  srv, cli: TNetSocket;
+  addr, frame, remote: TNetAddr;
+  ifindex, sendindex: integer;
   s: ShortString;
   txt, uri: RawUtf8;
   ip: TNetIP6;
@@ -4504,6 +4613,33 @@ begin
   CheckEqual(SizeOf(TNetIP4), 4);
   CheckEqual(SizeOf(TNetIP6), 16);
   CheckEqual(SizeOf(TNetAddr), SOCKADDR_SIZE);
+  // validate the receiving interface of UDP frames
+  Check(NewSocket(cLocalhost, '0', nlUdp, {bind=}true,
+    100, 100, 100, 0, srv, @addr) = nrOk, 'udp bind');
+  Check(srv.GetName(addr) = nrOk, 'udp port');
+  {$ifdef HAS_IP_PKTINFO}
+  Check(srv.SetPacketInfo(true) = nrOk, 'pktinfo');
+  {$else}
+  Check(srv.SetPacketInfo(true) = nrNotImplemented, 'pktinfo');
+  {$endif HAS_IP_PKTINFO}
+  cli := addr.NewSocket(nlUdp);
+  sendindex := 0; // first with no interface, then through the loopback
+  for i := 1 to 2 do
+  begin
+    Check(cli.SendToIf(@addr, SizeOf(addr), addr, sendindex) = nrOk, 'sendto');
+    FillCharFast(frame, SizeOf(frame), 0);
+    CheckEqual(srv.RecvFromIf(@frame, SizeOf(frame), remote, ifindex),
+      SizeOf(addr), 'recvfrom');
+    Check(CompareMem(@frame, @addr, SizeOf(addr)), 'udp frame');
+    {$ifdef HAS_IP_PKTINFO}
+    Check(ifindex > 0, 'ifindex');
+    {$else}
+    CheckEqual(ifindex, 0, 'ifindex');
+    {$endif HAS_IP_PKTINFO}
+    sendindex := ifindex;
+  end;
+  cli.ShutdownAndClose({rdwr=}false);
+  srv.ShutdownAndClose({rdwr=}true);
   FillZero(ip.b);
   Check(IsZero(ip.b));
   IP4Short(@ip, s);
@@ -7898,7 +8034,7 @@ begin
         if clientCng = nil then
           raise ESynException.Create('Schannel client CNG PFX import failed');
         if not WinCertCtxtKeyProvider(clientCng.WinContext, provider) or
-           (provider.ProviderType <> 0) or
+           (provider.ProviderType <> 0) or // LoadPKCS12() is CNG-only
            (provider.Provider = '') or
            (provider.Container = '') then
           raise ESynException.Create('Schannel client needs a persisted CNG key');

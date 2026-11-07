@@ -220,6 +220,11 @@ From `31689eed5`, `23b709e4b`, `77c73fe68`, `013da880b`, `02bdc1671` (buffer ove
 - Respect the unit layering in `src/FOLDER-DEPENDENCIES.md` (core -> lib/crypt -> net -> db ->
   orm/rest/soa -> app/ui/...). Conditional defines come only from `src/mormot.defines.inc`.
 - Diagnostics via `TSynLog`, never `WriteLn`. No swallowed exceptions / bare `except`.
+- Interfaces are reference-counted: never `Free` them. An interface depending on an
+  object (e.g. `ISqlDBRows`/`ISqlDBStatement` on their `TSqlDBConnectionProperties`)
+  must be released before that object; `:= nil` does not cover the hidden temporaries
+  of function results, so use them in a separate method or nested procedure - see
+  "Release Order" in `src/db/CLAUDE.md`.
 - Match the neighbouring code: `///` documentation comments on public API, existing
   naming, existing helper functions. Read recent upstream commits on the same unit to see
   how Arnaud refactors - that is the target style.

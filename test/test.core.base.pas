@@ -4818,6 +4818,7 @@ procedure TTestCoreBase.Integers;
     bin := HexToBin(hex);
     r.Init(bin);
     failed := false;
+    // TSynLog.Family.ExceptionIgnoreCurrentThread := true; made by caller
     try
       r.VarLeb64;
     except
@@ -11479,9 +11480,9 @@ begin
     'MULTIPART/FORM-DATA; BOUNDARY=upper', bound) and
     (bound = 'upper'), 'b12');
   // invalid boundaries are rejected in the constructors
+  TSynLog.Family.ExceptionIgnoreCurrentThread := true;
   src := TRawByteStringStream.Create('X');
   try
-    TSynLog.Family.ExceptionIgnoreCurrentThread := true;
     raised := false;
     try
       SetLength(bound, 500);
@@ -11867,6 +11868,50 @@ procedure TTestCoreBase.Debugging;
     end;
   end;
 
+  procedure TestSaveToExeSigned;
+  var
+    deb: TDebugFile;
+    exe: RawByteString;
+    p: PAnsiChar;
+    fn: TFileName;
+    raised: boolean;
+  begin
+    // minimal PE32 header, enough for SaveToExe() and its signature detection
+    p := FastNewRawByteString(exe, 1024);
+    FillCharFast(p^, 1024, 0);
+    PWord(p)^ := $5a4d;
+    PCardinal(p + $3c)^ := $80; // set e_lfanew
+    inc(p, $80);                // move to PE header
+    PCardinal(p)^ := $00004550;
+    PWord(p + 24)^ := $010b;
+    fn := WorkDir + 'mabsigned.exe';
+    FileFromString(exe, fn);
+    deb := TDebugFile.Create(fn, [dfsNoMabSaveAtCreate,
+      dfsNoMabExternalCheck, dfsNoMabInternalCheck]);
+    try
+      deb.SaveToExe(fn);
+      Check(FileSize(fn) > 1024, 'unsigned exe');
+      // set IMAGE_DIRECTORY_ENTRY_SECURITY: appending would break the signature
+      PCardinal(p + $98)^ := 1000;
+      PCardinal(p + $9c)^ := 24;
+      FileFromString(exe, fn);
+      raised := false;
+      TSynLog.Family.ExceptionIgnore.Add(ESynLogException);
+      try
+        deb.SaveToExe(fn);
+      except
+        on ESynLogException do
+          raised := true;
+      end;
+      TSynLog.Family.ExceptionIgnore.Remove(ESynLogException);
+      Check(raised, 'signed exe');
+      CheckEqual(FileSize(fn), 1024, 'signed exe untouched');
+    finally
+      deb.Free;
+      DeleteFile(fn);
+    end;
+  end;
+
 var
   tmp: TBuffer2K;
   dst, up: PUtf8Char;
@@ -12019,6 +12064,7 @@ begin
   TestPlainText;
   TestNoProcNoEvent;
   TestZonedLayout;
+  TestSaveToExeSigned;
   Test('D:\Dev\lib\SQLite3\exe\TestSQL3.exe 1.2.3.4 (2011-04-07 11:09:06)'#13#10 +
     'Host=MyPC User=MySelf CPU=2*0-15-1027 OS=2.3=5.1.2600 Wow64=0 Freq=3579545 ' +
     'Instance=D:\Dev\MyLibrary.dll'#13#10 +
