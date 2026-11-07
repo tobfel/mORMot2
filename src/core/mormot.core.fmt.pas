@@ -4132,7 +4132,8 @@ begin
         break;
       '''',
       '"':
-        result := SkipQuoted(LineIdx, result);
+        if result = p then
+          result := SkipQuoted(LineIdx, result) - 1;
       '{',
       '[':
         inc(depth);
@@ -4356,6 +4357,8 @@ begin
   repeat
     // detect line ending (using SSE2 asm if available)
     len := BufferLineLength(lineStart, lineEnd); // both CRLF or LF
+    if PosChar(lineStart, len, #0) <> nil then
+       Error(fCount, '#0 not allowed inside input buffer');
     lineNext := lineStart + len;
     // prepare a new entry in fLines[]
     if fCount >= length(fLines) then
@@ -4398,7 +4401,7 @@ begin
       inc(lineStart);
     if lineStart^ = #10 then
       inc(lineStart);
-  until lineStart^ = #0;
+  until lineStart >= lineEnd;
   if length(fLines) <> fCount then
     DynArrayFakeLength(fLines, fCount);
 end;
