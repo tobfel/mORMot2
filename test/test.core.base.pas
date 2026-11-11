@@ -4818,6 +4818,7 @@ procedure TTestCoreBase.Integers;
     bin := HexToBin(hex);
     r.Init(bin);
     failed := false;
+    // TSynLog.Family.ExceptionIgnoreCurrentThread := true; made by caller
     try
       r.VarLeb64;
     except
@@ -5146,6 +5147,25 @@ begin
   result := GetExtended(P, err); // resolve the proper GetExtended() overload
 end;
 
+// raw ULP comparison helper to be used instead of CheckSame() for huge numbers
+function SameWithin2Ulps(A, B: PDouble): boolean;
+var
+  a64, b64: QWord;
+begin
+  result := A^ = B^; // also handles +0/-0 (NAN/INF never appear here)
+  if result then
+    exit;
+  a64 := PUInt64(A)^;
+  b64 := PUInt64(B)^;
+  result := false;
+  if ((a64 xor b64) shr 63) <> 0 then
+    exit; // different signs
+  if a64 > b64 then
+    result := a64 - b64 <= 2
+  else
+    result := b64 - a64 <= 2;
+end;
+
 procedure TTestCoreBase.NumericalConversionsSlow(Sender: TObject);
 var
   HasFP80: boolean;
@@ -5320,13 +5340,20 @@ var
         p2 := GetNum(p, vd, {double=}true);
         Check(p2 - p = lens[i]);
         Check(vd.VType >= varInteger);
-        if not HasFP80 then
+        {$ifdef ASMX64NOTPIC}
+        if (@GetExt <> @GetExtendedPas) and
+           not HasFP80 then
+        begin
+          // exact comparison when pure 64-bit double are involved
           if vd.VType = varDouble then
             Check(ref[i] = vd.VInt64, 'refvd1')
           else if Check(VariantToDouble(variant(vd), PDouble(@d64)^)) then
-            Check(ref[i] = d64, 'refvd2')
-        else if Check(VariantToDouble(variant(vd), d)) then
-          CheckSame(d, PDouble(@ref[i])^, DOUBLE_SAME, 'refvd3');
+            Check(ref[i] = d64, 'refvd2');
+        end
+        else // fallback for pure pascal version, but with high resolution
+        {$endif ASMX64NOTPIC}
+        if Check(VariantToDouble(variant(vd), d)) then
+          Check(SameWithin2Ulps(@d, @ref[i]), 'refvd3');
         p := p2 + 1;
       end;
       NotifyTestSpeed('GetNumericVariant%', [tmp], length(lens), length(data), @Timer);
@@ -5410,7 +5437,7 @@ var
       tmp := 'Pas';
       DoTest(@GetExtendedPas, @GetNumericVariantPas);
       tmp := 'Ssse3';
-      if cfSSE3 in CpuFeatures then
+      if cfSSSE3 in CpuFeatures then
         DoTest(@GetExtendedSsse3, @GetNumericVariantSsse3);
       {$else}
       tmp[0] := #0;
@@ -11479,9 +11506,9 @@ begin
     'MULTIPART/FORM-DATA; BOUNDARY=upper', bound) and
     (bound = 'upper'), 'b12');
   // invalid boundaries are rejected in the constructors
+  TSynLog.Family.ExceptionIgnoreCurrentThread := true;
   src := TRawByteStringStream.Create('X');
   try
-    TSynLog.Family.ExceptionIgnoreCurrentThread := true;
     raised := false;
     try
       SetLength(bound, 500);
@@ -11867,6 +11894,50 @@ procedure TTestCoreBase.Debugging;
     end;
   end;
 
+  procedure TestSaveToExeSigned;
+  var
+    deb: TDebugFile;
+    exe: RawByteString;
+    p: PAnsiChar;
+    fn: TFileName;
+    raised: boolean;
+  begin
+    // minimal PE32 header, enough for SaveToExe() and its signature detection
+    p := FastNewRawByteString(exe, 1024);
+    FillCharFast(p^, 1024, 0);
+    PWord(p)^ := $5a4d;
+    PCardinal(p + $3c)^ := $80; // set e_lfanew
+    inc(p, $80);                // move to PE header
+    PCardinal(p)^ := $00004550;
+    PWord(p + 24)^ := $010b;
+    fn := WorkDir + 'mabsigned.exe';
+    FileFromString(exe, fn);
+    deb := TDebugFile.Create(fn, [dfsNoMabSaveAtCreate,
+      dfsNoMabExternalCheck, dfsNoMabInternalCheck]);
+    try
+      deb.SaveToExe(fn);
+      Check(FileSize(fn) > 1024, 'unsigned exe');
+      // set IMAGE_DIRECTORY_ENTRY_SECURITY: appending would break the signature
+      PCardinal(p + $98)^ := 1000;
+      PCardinal(p + $9c)^ := 24;
+      FileFromString(exe, fn);
+      raised := false;
+      TSynLog.Family.ExceptionIgnore.Add(ESynLogException);
+      try
+        deb.SaveToExe(fn);
+      except
+        on ESynLogException do
+          raised := true;
+      end;
+      TSynLog.Family.ExceptionIgnore.Remove(ESynLogException);
+      Check(raised, 'signed exe');
+      CheckEqual(FileSize(fn), 1024, 'signed exe untouched');
+    finally
+      deb.Free;
+      DeleteFile(fn);
+    end;
+  end;
+
 var
   tmp: TBuffer2K;
   dst, up: PUtf8Char;
@@ -12019,6 +12090,7 @@ begin
   TestPlainText;
   TestNoProcNoEvent;
   TestZonedLayout;
+  TestSaveToExeSigned;
   Test('D:\Dev\lib\SQLite3\exe\TestSQL3.exe 1.2.3.4 (2011-04-07 11:09:06)'#13#10 +
     'Host=MyPC User=MySelf CPU=2*0-15-1027 OS=2.3=5.1.2600 Wow64=0 Freq=3579545 ' +
     'Instance=D:\Dev\MyLibrary.dll'#13#10 +

@@ -3163,7 +3163,7 @@ begin
   if cut < 0 then
     exit;
   while (cut > 0) and
-        (p[cut - 1] <= ' ') do
+        (S[cut] <= ' ') do
     dec(cut);
   SetLength(S, cut);
 end;
@@ -3397,7 +3397,7 @@ type
       LineIdx: integer; var Text: RawUtf8): PUtf8Char;
     procedure EmitFlowScalar(const Frag: RawUtf8; LineIdx: integer);
     procedure EmitScalarFragment(const Frag: RawUtf8; LineIdx: integer);
-    procedure EmitKey(const K: RawUtf8);
+    procedure EmitKey(const K: RawUtf8; LineIdx: integer);
     procedure EmitCollectBlockScalar(MinIndent, ExplicitIndent: integer;
       Folded, Chomp: AnsiChar);
     procedure EmitBlockScalar(const rest: RawUtf8; BaseIndent: integer);
@@ -3491,14 +3491,21 @@ begin
     Error(LineIdx, 'multi-document streams are not supported');
 end;
 
-procedure TYamlToJson.EmitKey(const K: RawUtf8);
+procedure TYamlToJson.EmitKey(const K: RawUtf8; LineIdx: integer);
 begin
   if K <> '' then
     case K[1] of
-      '"':
-        fOut.AddString(K);              // already JSON-escaped
+      '"',
       '''':
-        fOut.AddQuotedStringAsJson(K);  // unquote and JSON-escape
+        begin
+          // A quoted YAML scalar must be entirely consumed before JSON output.
+          if SkipQuoted(LineIdx, pointer(K)) - PUtf8Char(pointer(K)) <> length(K) then
+            ErrorFmt(LineIdx, 'unexpected text after quoted scalar %', [K]);
+          if K[1] = '"' then
+            fOut.AddString(K)             // already JSON-escaped
+          else
+            fOut.AddQuotedStringAsJson(K);
+        end;
     else
       fOut.AddJsonString(K);            // JSON-escape
     end
@@ -3523,7 +3530,7 @@ begin
   end;
   if s[1] in ['"', ''''] then
   begin
-    EmitKey(s);
+    EmitKey(s, LineIdx);
     exit;
   end;
   CheckUnsupportedScalar(LineIdx, pointer(s));
@@ -3843,7 +3850,7 @@ begin
       TrimLeftCopy(c^.Content, keyEnd + 2, MaxInt, rest);
     if not first then
       fOut.AddDirect(',');
-    EmitKey(keyText);
+    EmitKey(keyText, fIdx);
     fOut.AddDirect(':');
     lineIdx := fIdx;
     if (rest = '') or
@@ -3935,7 +3942,12 @@ begin
       // the current line to look like it starts at that indent and recurse
       c^.Content := afterDash;
       c^.Indent := implicitIndent;
+      if fDepth >= fMaxDepth then
+        ErrorFmt(lineIdx, 'YAML nesting depth exceeds YamlMaxDepth (%)',
+          [fMaxDepth]);
+      inc(fDepth);
       ParseBlockSeq(implicitIndent);
+      dec(fDepth);
     end
     else if afterDash[1] in ['{', '['] then
     begin
@@ -3951,8 +3963,14 @@ begin
       ParseValue(implicitIndent);
     end
     else if YamlLineKeyEnd(afterDash) >= 0 then
+    begin
       // implicit mapping item: "- key: value" [, "   key2: v2"]
-      ParseImplicitMapFromDash(implicitIndent, afterDash, lineIdx)
+      if fDepth >= fMaxDepth then
+        ErrorFmt(lineIdx, 'YAML nesting depth exceeds YamlMaxDepth (%)', [fMaxDepth]);
+      inc(fDepth);
+      ParseImplicitMapFromDash(implicitIndent, afterDash, lineIdx);
+      dec(fDepth);
+    end
     else
     begin
       if afterDash[1] in ['"', ''''] then
@@ -3984,7 +4002,7 @@ begin
   rest := '';
   if keyEnd + 1 < length(firstEntry) then
     TrimLeftCopy(firstEntry, keyEnd + 2, MaxInt, rest);
-  EmitKey(keyText);
+  EmitKey(keyText, firstLineIdx);
   fOut.AddDirect(':');
   if (rest = '') or
      (rest[1] = '#') then
@@ -4040,7 +4058,7 @@ begin
     if keyEnd + 1 < length(lineContent) then
       TrimLeftCopy(lineContent, keyEnd + 2, MaxInt, rest);
     fOut.AddDirect(',');
-    EmitKey(keyText);
+    EmitKey(keyText, fIdx);
     fOut.AddDirect(':');
     curIdx := fIdx;
     if (rest = '') or
@@ -4114,7 +4132,8 @@ begin
         break;
       '''',
       '"':
-        result := SkipQuoted(LineIdx, result);
+        if result = p then
+          result := SkipQuoted(LineIdx, result) - 1;
       '{',
       '[':
         inc(depth);
@@ -4199,7 +4218,7 @@ begin
     CheckUnsupportedScalar(LineIdx, pointer(keyText));
     if not first then
       fOut.Add(',');
-    EmitKey(keyText);
+    EmitKey(keyText, LineIdx);
     fOut.AddDirect(':');
     first := false;
     // skip whitespace before value
@@ -4338,6 +4357,8 @@ begin
   repeat
     // detect line ending (using SSE2 asm if available)
     len := BufferLineLength(lineStart, lineEnd); // both CRLF or LF
+    if PosChar(lineStart, len, #0) <> nil then
+       Error(fCount, '#0 not allowed inside input buffer');
     lineNext := lineStart + len;
     // prepare a new entry in fLines[]
     if fCount >= length(fLines) then
@@ -4380,7 +4401,7 @@ begin
       inc(lineStart);
     if lineStart^ = #10 then
       inc(lineStart);
-  until lineStart^ = #0;
+  until lineStart >= lineEnd;
   if length(fLines) <> fCount then
     DynArrayFakeLength(fLines, fCount);
 end;
@@ -6474,7 +6495,7 @@ begin
     inc(v);
     dec(l);
   end;
-  W.AddShort(v, l);
+  W.AddNoJsonEscape(v, l);
 end;
 
 procedure TPreproc.DoEndif(var P: PUtf8Char);
@@ -7061,7 +7082,7 @@ begin
     begin
       P := Expand(P, v, l, {keepmarker=}false);
       if v <> nil then
-        W.AddShort(v, l);
+        W.AddNoJsonEscape(v, l);
     end
     else
       inc(P); // this was not $(ident) -> write verbatim and continue

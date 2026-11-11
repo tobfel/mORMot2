@@ -2639,6 +2639,14 @@ const
 type
   /// we use Delphi TMonitor on POSIX - no pthread direct call yet
   TRTLCriticalSection = class(TObject);
+  /// opaque storage of a pthread_mutex_t, as used by TOSLightLock on Delphi POSIX
+  // - pthread_mutex_t is 40 bytes on Linux x86_64 and 64 bytes on Darwin, so
+  // we reserve enough room without referencing Posix.SysTypes in this interface
+  TPosixLightMutex = record
+    aligned: pointer;
+    padding: array[1 .. 7] of PtrUInt;
+  end;
+
   TLibHandle = PtrUInt;
   TSystemTime = packed record
     Year, Month, DayOfWeek, Day, Hour, Minute, Second, MilliSecond: word;
@@ -2654,8 +2662,10 @@ type
 
 type
   /// system-specific structure holding a non-recursive mutex e.g. for TOSLightLock
-  // - is a futex 32-bit flag on Linux/Windows or a pthread_mutex on BSD
-  TOSLightMutex = {$ifdef OSFUTEX} cardinal {$else} TRTLCriticalSection {$endif};
+  // - is a futex 32-bit flag on Windows and FPC Linux, or a pthread_mutex on
+  // BSD and Delphi POSIX
+  TOSLightMutex = {$ifdef OSFUTEX} cardinal {$else}
+    {$ifdef FPC} TRTLCriticalSection {$else} TPosixLightMutex {$endif} {$endif};
 
 /// raw cross-platform library loading function
 // - alternative to LoadLibrary() and SafeLoadLibrary() Windows API and RTL
@@ -4816,7 +4826,8 @@ type
 
   /// the fastest non-reentrant lock supplied by the Operating System
   // - on Windows, calls WaitOnAddress/WakeByAddressSingle Win8+ API
-  // - on Linux, uses 32-bit futex syscall; on BSD, calls pthread_mutex_*()
+  // - on FPC Linux, uses 32-bit futex syscall; on BSD and Delphi POSIX, calls
+  // pthread_mutex_*() with no recursive attribute
   // - other systems fallback to TRTLCriticalSection
   // - don't forget to call Init and Done to properly initialize the structure
   // - to protect a very small code section of a few CPU cycles with no Init/Done
@@ -4844,13 +4855,15 @@ type
     // - warning: this method is NOT reentrant/recursive, so any nested call
     // would deadlock
     procedure Lock;
-      {$ifdef HASINLINE} inline; {$endif}
+      {$ifdef HASINLINE} {$ifndef DELPHIPOSIX} inline; {$endif} {$endif}
     /// try once to acquire the raw futex or call pthread_mutex_trylock() method
     function TryLock: boolean;
-      {$ifdef HASINLINE} inline; {$endif}
+      {$ifdef HASINLINE} {$ifndef DELPHIPOSIX} inline; {$endif} {$endif}
     /// leave an OS lock
     procedure UnLock;
-      {$ifdef HASSAFEINLINE} inline; {$endif}
+      {$ifdef HASSAFEINLINE} {$ifndef DELPHIPOSIX} inline; {$endif} {$endif}
+    // note: not inlined on Delphi POSIX since Posix.Pthread is used only by the
+    // implementation section of this unit
   end;
   POSLightLock = ^TOSLightLock;
 
