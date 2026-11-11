@@ -204,7 +204,9 @@ function IsConstantOrNumberJson(P: PUtf8Char; len: PtrUInt): boolean;
 
 /// test if the supplied text buffer seems to be a correct (extended) JSON value
 // - will allow comments and extended MongoDB JSON syntax unless Strict=true
-// - numbers, escaped strings and commas are wild guessed, for performance
+// - numbers, escaped strings and commas are wild guessed, for performance: even
+// in Strict=true mode, this is not a full RFC 8259 validation function, but
+// it validates the input would be good enough at least for our own JSON parser
 function IsValidJson(P: PUtf8Char; len: PtrInt; strict: boolean = false): boolean; overload;
 
 /// test if the supplied text seems to be a correct (extended) JSON value
@@ -2746,13 +2748,13 @@ begin
   StackCount := 0;
   JsonFirst := @JSON_TOKENS;
   Max := PMax;
-end; // RootCount is not initialized by default unless InitCount() is called
+  RootCount := 0;
+end;
 
 procedure TJsonParser.InitCount(Strict: boolean; PMax: PUtf8Char;
   First: TJsonParserState);
 begin
   Init(Strict, PMax);
-  RootCount := 0;
   Stack[0] := stValue; // emulate parsing of the opening [ or {
   inc(StackCount);
   State := First;
@@ -3032,7 +3034,7 @@ begin
       State := stValue;
   else if Fmt * [jrfTrailingComma, jrfNoTrailingComma] = [] then
          if (FmtJson <> jsonMorml) or  // no need of },value or ],value
-            not (W.B^ in ['}', ']']) then
+            not (W.LastChar in ['}', ']']) then
            W.AddDirect(',');
   end;
   if jrfIndent in Fmt then
@@ -3237,7 +3239,7 @@ begin
     m := pmPlainString; // AddJsonEscape
   ReformatBeginValue;
   if m = pmConstNum then
-    W.AddShort(v, l)
+    W.AddNoJsonEscape(v, l)
   else
   begin
     W.AddDirect('"');
@@ -3245,7 +3247,7 @@ begin
       if m = pmPlainString then
         W.AddJsonEscape(v, l)    // |default or enc:NAME
       else
-        W.AddShort(v, l); // pmEscapedString: val = "was \r quoted"
+        W.AddNoJsonEscape(v, l); // pmEscapedString: val = "was \r quoted"
     W.AddDirect('"');
   end;
   ReformatEndValue;
@@ -3318,7 +3320,7 @@ dquote:   ReformatBeginValue;
           if (Value <> nil) and
              (jcEndOfJsonValueField in JsonSet[Value^]) then // #0#9#10#13 ,}]{[
           begin
-            W.AddShort(P, Value - P); // true number
+            W.AddNoJsonEscape(P, Value - P); // true number, unbounded length
             P := Value;
             ReformatEndValue;
           end
@@ -3413,9 +3415,9 @@ ident:    Value := P;
           inc(StackCount);
           inc(W.fHumanReadableLevel);
           if FmtJson = jsonMorml then // no need of ,{ ,[ :{ or :[
-            if W.B^ in [':', ','] then
+            if W.LastChar in [':', ','] then
               W.CancelLastChar;
-          W.AddDirect(P^);
+          W.Add(P^);
           if P^ = '{' then
             State := stObjectNameFirst
           else
@@ -3431,7 +3433,7 @@ ident:    Value := P;
           dec(W.fHumanReadableLevel);
           if jrfIndent in Fmt then
             W.AddCRAndIndent;
-          W.AddDirect(P^);
+          W.Add(P^);
           inc(P);
           if (jrfTrailingComma in Fmt) and
              not (State in [stObjectNameFirst, stValueFirst]) then
@@ -4212,7 +4214,8 @@ begin
       begin // should be unescaped in-place
         info.Json := Name - 1;
         info.GetJsonField;
-        if (info.Value <> nil) and
+        if (info.Json <> nil) and
+           (info.Value <> nil) and
            info.WasString and
            (info.EndOfObject = ':') then
         begin
@@ -4607,7 +4610,7 @@ begin
         exit;
       if aftername = stPropNameUnquoted then // was 'a:' -> append '"a",'
         wk.AddDirect('"');
-      wk.AddShort(kb, ke - kb);
+      wk.AddNoJsonEscape(kb, ke - kb);
       if aftername = stPropNameUnquoted then
         wk.AddDirect('"', ',')
       else
@@ -11465,7 +11468,7 @@ var
 begin // not inlined, since Create() are already slow and complex enough
   {$ifdef NOPATCHVMT}
   p := pointer(Rtti.FindType(PPointer(PPAnsiChar(ObjectInstance)^ + vmtTypeInfo)^));
-  {$else}
+  {$else} // Rtti.RegisterSafe.IsLocked check not needed here
   p := PPointer(PPAnsiChar(ObjectInstance)^ + vmtAutoTable)^; // = FindClass()
   {$endif NOPATCHVMT}
   if (p = nil) or

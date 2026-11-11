@@ -2760,7 +2760,11 @@ function GetBitPtr(Bits: pointer; aIndex: PtrInt): boolean;
 
 /// set a particular bit into a bit array
 // - SetBit() can't be inlined, whereas this pointer-oriented function can
-procedure SetBitPtr(Bits: pointer; aIndex: PtrInt);
+procedure SetBitPtr(Bits: pointer; aIndex: PtrInt); overload;
+  {$ifdef HASINLINE}inline;{$endif}
+
+/// set or unset a particular bit into a bit array
+procedure SetBitPtr(Bits: pointer; aIndex: PtrInt; const aSet: boolean); overload;
   {$ifdef HASINLINE}inline;{$endif}
 
 /// set a particular bit into a bit array, if it has not be already set
@@ -3726,14 +3730,14 @@ function EventEquals(const eventA, eventB): boolean;
 
 type
   // internal temporary buffers on stack used e.g. by StrInt32() or StrInt64()
-  TTemp2   = array[0..1] of AnsiChar;
-  TTemp4   = array[0..3] of AnsiChar;
-  TTemp8   = array[0..7] of AnsiChar;
-  TTemp16  = array[0..15] of AnsiChar;
-  TTemp24  = array[0..23] of AnsiChar;
-  TTemp32  = array[0..31] of AnsiChar;
-  TTemp47  = array[0..47] of AnsiChar;
-  TTemp64  = array[0..63] of AnsiChar;
+  TTemp2   = array[0..1]   of AnsiChar;
+  TTemp4   = array[0..3]   of AnsiChar;
+  TTemp8   = array[0..7]   of AnsiChar;
+  TTemp16  = array[0..15]  of AnsiChar;
+  TTemp24  = array[0..23]  of AnsiChar;
+  TTemp32  = array[0..31]  of AnsiChar;
+  TTemp47  = array[0..47]  of AnsiChar;
+  TTemp64  = array[0..63]  of AnsiChar;
   TTemp128 = array[0..127] of AnsiChar;
   TTemp256 = array[0..255] of AnsiChar;
   TTemp512 = array[0..511] of AnsiChar;
@@ -9612,6 +9616,19 @@ procedure SetBitPtr(Bits: pointer; aIndex: PtrInt);
 begin
   PIntegerArray(Bits)[aIndex shr 5] :=
     PIntegerArray(Bits)[aIndex shr 5] or (1 shl (aIndex and 31));
+end;
+
+procedure SetBitPtr(Bits: pointer; aIndex: PtrInt; const aSet: boolean);
+var
+  p: PInteger;
+  v: integer;
+begin
+  p := @PIntegerArray(Bits)[aIndex shr 5];
+  v := 1 shl (aIndex and 31);
+  if aSet then
+    p^ := p^ or v
+  else
+    p^:= p^ and (not v);
 end;
 
 function TrySetBitPtr(Bits: pointer; aIndex: cardinal): boolean;

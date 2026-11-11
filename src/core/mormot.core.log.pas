@@ -195,6 +195,8 @@ type
     // - the executable name must be specified, because it's impossible to
     // write to the executable of a running process
     // - this method will work for .exe and for .dll (or .ocx)
+    // - raise ESynLogException if the file has an Authenticode signature,
+    // which would be invalidated: embed the .mab first, then sign
     procedure SaveToExe(const aExeName: TFileName;
       Scope: TDebugFileScope = []);
     /// save all debugging information as JSON content
@@ -2392,9 +2394,11 @@ var
   threadflags: ^TSynLogThreadInfoFlags;
 {$endif NOEXCEPTIONINTERCEPT}
 begin
+  {$ifndef DELPHIPOSIX}
   if skip < 0 then
     skip := 0;
   inc(skip); // ignore this very function
+  {$endif DELPHIPOSIX}
   {$ifndef NOEXCEPTIONINTERCEPT}
   // the manual stack walk makes speculative reads: intercepted exceptions
   // should not reach the logs during the process
@@ -2683,7 +2687,6 @@ type
     numoptable: array[1..255] of byte; // start at index 1 -> no THash2048
     function LoadSections: boolean;
     procedure ReadInit(aBase, aLimit: Int64);
-    function ReadLeb128: Int64;
     function ReadAddress(addr_size: PtrInt; ctx: PUtf8Char): cardinal;
     procedure SkipAttr(form: PtrUInt; const header64: TDwarfDebugInfoHeader64);
     procedure ReadAbbrevTable(file_offset, file_size: QWord);
@@ -2789,30 +2792,6 @@ begin
   if aBase + aLimit > Int64(Map.Size) then
     Read.ErrorOverflow;
   Read.Init(Map.Buffer + aBase, aLimit);
-end;
-
-function TDwarfReader.ReadLeb128: Int64;
-var
-  shift: byte;
-  data: PtrInt;
-  val: Int64;
-begin // LEB-128 encoding does not match our FromVarInt64 sign extension
-  data := Read.NextByte;
-  if data <= 127 then
-    // optimize the most common case of -64..+63 range
-    exit((not ((data and (Int64(1) shl 6)) - 1)) or data);
-  result := 0;
-  shift := 0;
-  repeat
-    val := data and $7f;
-    result := result or (val shl shift);
-    inc(shift, 7);
-    if data <= 127 then
-      break;
-    data := Read.NextByte;
-  until false;
-  // extend sign from current shifted bits
-  result := (not ((result and (Int64(1) shl (shift - 1))) - 1)) or result;
 end;
 
 function TDwarfReader.ReadAddress(addr_size: PtrInt; ctx: PUtf8Char): cardinal;
@@ -3154,8 +3133,8 @@ begin
       DW_LNS_ADVANCE_PC:
         inc(state.address, Read.VarUInt32 * header64.minimum_instruction_length);
       DW_LNS_ADVANCE_LINE:
-        // use ReadLeb128 < 0 to decrease state.line when needed
-        state.line := Int64(state.line) + ReadLeb128;
+        // LEB128 negative values would decrease state.line when needed
+        state.line := Int64(state.line) + Read.VarLeb64;
       DW_LNS_SET_FILE:
         state.fileid := Read.VarUInt32;
       DW_LNS_NEGATE_STMT:
@@ -4130,6 +4109,32 @@ begin
     FileSetDateFrom(aFileName, fExeFile);
 end;
 
+function IsPeSigned(P: PAnsiChar; Len: PtrUInt): boolean;
+var
+  pe: PtrUInt;
+  sec: PCardinalArray;
+begin
+  // check IMAGE_DIRECTORY_ENTRY_SECURITY of a PE32/PE32+ executable buffer
+  result := false;
+  if (Len < 1024) or
+     (PWord(P)^ <> $5a4d) then // 'MZ'
+    exit;
+  pe := PCardinal(P + $3c)^; // DOS header e_lfanew
+  if (pe > Len - $b0) or
+     (PCardinal(P + pe)^ <> $00004550) then // 'PE'#0#0
+    exit;
+  case PWord(P + pe + 24)^ of // optional header Magic
+    $010b:
+      sec := pointer(P + pe + $98); // PE32
+    $020b:
+      sec := pointer(P + pe + $a8); // PE32+
+  else
+    exit;
+  end;
+  result := (sec[0] <> 0) and // file offset of the certificate table
+            (sec[1] <> 0);    // its size
+end;
+
 procedure TDebugFile.SaveToExe(const aExeName: TFileName; Scope: TDebugFileScope);
 var
   exe, mab: TMemoryStream;
@@ -4149,6 +4154,11 @@ begin
       exesize := exe.Size;
       if exesize < 16 then
         exit;
+      // the Authenticode digest covers any data before the certificate table,
+      // which should be at the end of the file: appending would break it
+      if IsPeSigned(exe.Memory, exesize) then
+        ESynLogException.RaiseUtf8('%.SaveToExe: % is digitally signed ' +
+          '- embed the debug info before signing', [self, aExeName]);
       exesize := AlgoSynLZ.StreamComputeLen(exe.Memory, exesize, MAGIC_MAB);
       exe.Size := exesize + mabsize; // trim and reserve space for .mab
       MoveFast(mab.Memory^, PAnsiChar(exe.Memory)[exesize], mabsize); // append
@@ -5487,7 +5497,7 @@ begin
   result := pointer(Self);
   if result = nil then
     exit;
-  // inlined Rtti.Find(ClassType)
+  // inlined Rtti.Find(ClassType) - no need to check Rtti.RegisterSafe.IsLocked
   {$ifdef NOPATCHVMT}
   result := LastFamily;
   if (result <> nil) and
@@ -5523,7 +5533,7 @@ begin
   result := nil;
   if self = nil then
     exit;
-  {$ifdef NOPATCHVMT}
+  {$ifdef NOPATCHVMT} // no need to check Rtti.RegisterSafe.IsLocked
   lf := LastFamily;
   if (lf = nil) or
      (lf.SynLogClass <> self) then

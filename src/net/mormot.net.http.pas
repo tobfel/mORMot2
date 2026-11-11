@@ -513,8 +513,11 @@ type
     ProgressiveID: THttpPartialID;
     /// internal GetTickSec set by THttpServerSocketGeneric.DoProgressive
     ProgressiveTix: cardinal;
-    /// reset this request context to be used prior to any ProcessInit/Read/Write
+    /// reset this request context to be used prior to any ProcessRead/Write
     procedure Reset;
+    /// reset this context when all fields are known to be 0 e.g. after Create
+    procedure ResetZero;
+      {$ifdef HASINLINE} inline; {$endif}
     /// parse CommandUri into CommandMethod/CommandUri fields on server side
     // - e.g. from CommandUri = 'GET /uri HTTP/1.1'
     function ParseCommand: boolean;
@@ -578,9 +581,6 @@ type
     // add a second (wrong) Content-Range header
     // - returns HTTP_RANGENOTSATISFIABLE, so can be used as a result
     function RangeNotSatisfiable(aSize: Int64): integer;
-    /// (re)initialize the HTTP Server state machine for ProcessRead/ProcessWrite
-    procedure ProcessInit;
-      {$ifdef HASINLINE} inline; {$endif}
     /// receiving socket entry point of our asynchronous HTTP Server
     // - to be called with the incoming bytes from the socket receive buffer
     // - caller should have checked that current State is in HTTP_REQUEST_READ
@@ -3668,8 +3668,14 @@ begin
   ProgressiveTix := 0;
   fProgressivePosition := 0;
   fContentLeft := 0; // a body rejected in the middle may have left it <> 0
-  fContentPos := nil; // ProcessInit expects those fields to be 0/nil
+  fContentPos := nil; // ResetZero expects those fields to be 0/nil
 end;
+
+procedure THttpRequestContext.ResetZero;
+begin
+  RangeLength := -1;
+  ContentLength := -1; // -1 = no Content-Length: header
+end; // caller should set State := hrsGetCommand / hrsConnect depending
 
 procedure THttpRequestContext.GetTrimmed(P, P2: PUtf8Char; L: PtrInt;
   var result: RawUtf8; nointern: boolean);
@@ -3880,33 +3886,36 @@ begin
       begin
         // 'RANGE: BYTES='
         P1 := GotoNextNotSpace(P + 13); // use pointer on stack
-        RangeOffset := GetNextRange(P1);
-        if P1^ = '-' then
+        if P1^ in ['0' ..'9'] then      // only positive offset, as http.sys
         begin
-          inc(P1);
-          if P1^ in ['0'..'9'] then
+          RangeOffset := GetNextRange(P1);
+          if P1^ = '-' then // accepts bytes=100-200 or bytes=100-
           begin
-            // "Range: bytes=0-499" -> start=0, len=500
-            RangeLength := Int64(GetNextRange(P1));
-            if RangeLength >= MAX_INT64 - RangeOffset then
-              // last-byte-pos above any possible size: up to end of file, as
-              // RFC 9110 does expect - and no RangeLength + 1 overflow
-              RangeLength := -1
-            else
+            inc(P1);
+            if P1^ in ['0'..'9'] then
             begin
-              RangeLength := RangeLength - RangeOffset + 1;
-              if RangeLength < 0 then
-                RangeLength := 0;
+              // "Range: bytes=0-499" -> start=0, len=500
+              RangeLength := Int64(GetNextRange(P1));
+              if RangeLength >= MAX_INT64 - RangeOffset then
+                // last-byte-pos above any possible size: up to end of file, as
+                // RFC 9110 does expect - and no RangeLength + 1 overflow
+                RangeLength := -1
+              else
+              begin
+                RangeLength := RangeLength - RangeOffset + 1;
+                if RangeLength < 0 then
+                  RangeLength := 0;
+              end;
             end;
-          end;
-          // "bytes=1000-" -> start=1000, keep RangeLength=-1 to eof
-          if P1^ = ',' then
-            State := hrsErrorUnsupportedRange // no multipart range
+            // "bytes=1000-" -> start=1000, keep RangeLength=-1 to eof
+            if P1^ = ',' then
+              State := hrsErrorUnsupportedRange    // no multipart range
+            else
+              include(ResponseFlags, rfWantRange); // trigger range response
+          end
           else
-            include(ResponseFlags, rfWantRange);
-         end
-        else
-          State := hrsErrorUnsupportedRange;
+            State := hrsErrorUnsupportedRange;
+        end; // range: bytes=-10 fallback to 200 and the whole content as http.sys
         if not HeadersUnFiltered then
           exit;
       end;
@@ -4138,13 +4147,6 @@ begin // caller checked that ContentEncoding <> nil
   ContentEncoding := nil; // field will be used for output encoding now
 end;
 
-procedure THttpRequestContext.ProcessInit;
-begin // all other fields are expected to be filled with 0/nil/''
-  RangeLength := -1;
-  ContentLength := -1; // not yet parsed
-  State := hrsGetCommand;
-end;
-
 procedure THttpRequestContext.SetRawUtf8(var res: RawUtf8;
   P: pointer; PLen: PtrInt; nointern: boolean);
 begin
@@ -4195,7 +4197,14 @@ begin
   if PtrUInt(Len) < PtrUInt(st.Len) then  // detect st.Len=0 and/or Len=-1
     result := DoProcessParseLine(st, Len) // enough input: sub-function
   else
+  begin
+    // no #13 yet: this line can only grow, so reject it as soon as it is too
+    // long, as DoProcessParseLine() would do - instead of buffering it until
+    // its #13 arrives, i.e. maybe never
+    if st.Len > MaxHttpHeaderLineSize then
+      State := hrsErrorRejected;
     result := false;
+  end;
 end;
 
 function THttpRequestContext.DoProcessReadBody(var st: TProcessParseLine): boolean;
@@ -4255,8 +4264,10 @@ begin
             FastSetString(CommandUri, st.Line, st.LineLen); // never interned
             State := hrsGetHeaders;
           end
+          else if State = hrsErrorRejected then
+            break // notify the rejection now, not on the next input
           else
-            exit // not enough input or hrsErrorRejected
+            exit // not enough input
         else
           State := hrsErrorRejected; // reject e.g. TLS handshake = #22
       hrsGetHeaders:
@@ -4280,8 +4291,10 @@ begin
             else
               // ContentLength<=0 and not chunked = no body
               State := hrsWaitProcessing
+        else if State = hrsErrorRejected then
+          break // notify the rejection now, not on the next input
         else
-          exit; // not enough input or hrsErrorRejected
+          exit; // not enough input
       hrsGetBodyChunkedHexFirst,
       hrsGetBodyChunkedHexNext:
         if ProcessParseLine(st) then
@@ -4317,8 +4330,10 @@ begin
           else
             State := hrsGetBodyChunkedDataLastLine; // ends with last void chunk
         end
+        else if State = hrsErrorRejected then
+          break // notify the rejection now, not on the next input
         else
-          exit; // not enough input or hrsErrorRejected
+          exit; // not enough input
       hrsGetBodyChunkedData:
         begin
           if not DoProcessReadBody(st) then
@@ -4331,11 +4346,15 @@ begin
       hrsGetBodyChunkedDataVoidLine:
         if ProcessParseLine(st) then // chunks end with a void line
           State := hrsGetBodyChunkedHexNext
+        else if State = hrsErrorRejected then
+          break // notify the rejection now, not on the next input
         else
           exit; // not enough input
       hrsGetBodyChunkedDataLastLine:
         if ProcessParseLine(st) then // last chunk void line
           State := hrsWaitProcessing // notice: st.Len<>0 if pipelining
+        else if State = hrsErrorRejected then
+          break // notify the rejection now, not on the next input
         else
           exit; // not enough input
       hrsGetBodyContentLengthFirst,

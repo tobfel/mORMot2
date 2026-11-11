@@ -3435,6 +3435,18 @@ begin
   TestReformat(
     'one:{a:1,b:2}'#10'two:2',
     '{one:{a:1,b:2},two:2}');
+  // content bigger than the TTextWriterStackBuffer (was a stack overflow)
+  U2 := RawUtf8OfChar('1', 70000);
+  TestReformat('[' + U2 + ']', '[' + U2 + ']', jsonCompact);
+  U2 := StringReplaceAll(RawUtf8OfChar('x', 5000), 'x', '[],');
+  TestReformat('[' + U2 + '1]', '[' + U2 + '1]', jsonCompact);
+  U2 := StringReplaceAll(RawUtf8OfChar('x', 5000), 'x', '{},');
+  TestReformat('[' + U2 + '{}]', '[' + U2 + '{}]', jsonCompact);
+  K := RawUtf8OfChar('k', 20000);
+  J2 := '{"' + K + '":1,"b":2}';
+  CheckEqual(JsonObjectAsJsonArrays(pointer(J2), y, U2), 2);
+  CheckEqual(y, '["' + K + '","b"]');
+  CheckEqual(U2, '[1,2]');
   CheckEqual(JsonReformat(
     #10' // test'#10' # ignored'#10'one: 1'#10'"two": 2'#10, jsonCompact),
     '{"one":1,"two":2}');
@@ -6129,8 +6141,9 @@ end;
 procedure TTestCoreProcess._BSON;
 const
   BSONAWESOME = '{"BSON":["awesome",5.05,1986]}';
-  BSONAWESOMEBIN = #$31#0#0#0#4'BSON'#0#$26#0#0#0#2'0'#0#8#0#0#0'awesome'#0 +
-    #1'1'#0'333333'#$14#$40#$10'2'#0#$c2#7#0#0#0#0;
+  BSONAWESOMEHEX = // BSONAWESOME as BSON binary, in hexadecimal for Delphi
+    '310000000442534f4e002600000002300008000000617765736f6d6500' +
+    '0131003333333333331440103200c20700000000';
   BSONID = '507F191E810C19729DE860EA';
   REGEX = '{"$regex":"acme.*corp","$options":"i"}';
   REGEX2 = '{name:"John",field:/acme.*corp/i}';
@@ -6154,7 +6167,7 @@ var
   d, d2: TDateTime;
   oid, oid2: TBsonObjectID;
   oids: array of TBsonObjectID;
-  bsonDat, temp, bin: RawByteString;
+  bsonDat, temp, bin, awesomeBin: RawByteString;
   i, j: integer;
   b: PByte;
   elem, item: TBsonElement;
@@ -6191,6 +6204,7 @@ var
   end;
 
 begin
+  awesomeBin := HexToBin(BSONAWESOMEHEX);
   if CheckFailed(BsonVariantType <> nil, 'no BsonVariantType') then
     exit;
   if CheckFailed(BsonVariantVType <> 0, 'no BsonVariantVType') then
@@ -6317,7 +6331,7 @@ begin
   o := _Json('{"BSON": ["awesome", 5.05, 1986]}');
   bsonDat := Bson(TDocVariantData(o));
   Check(length(bsonDat) = $31);
-  Check(bsonDat = BSONAWESOMEBIN);
+  Check(bsonDat = awesomeBin);
   b := pointer(bsonDat);
   Check(BsonParseLength(b, $31) = length(bsonDat));
   Check(elem.FromNext(b));
@@ -6416,16 +6430,16 @@ begin
   Check(VariantSaveJson(_Json('{BSON:["awesome",5.05,1986]}')) = BSONAWESOME);
   Check(VariantSaveJson(_JsonFast('{ BSON : ["awesome", 5.05, 1986] }')) = BSONAWESOME);
   Check(VariantSaveJson(_JsonFast('{ ''BSON'' : ["awesome", 5.05, 1986] } ')) = BSONAWESOME);
-  Check(Bson('{BSON:["awesome",5.05,1986]}', [], []) = BSONAWESOMEBIN);
-  Check(Bson('{ BSON : ["awesome", 5.05, 1986] }', [], []) = BSONAWESOMEBIN);
-  Check(Bson('{ ''BSON'' : ["awesome", 5.05, 1986] } ', [], []) = BSONAWESOMEBIN);
-  Check(Bson('{%:[?,?,?]}', ['BSON'], ['awesome', 5.05, 1986]) = BSONAWESOMEBIN);
-  Check(Bson('{%:?}', ['BSON'], [_Arr(['awesome', 5.05, 1986])]) = BSONAWESOMEBIN);
-  Check(Bson(['BSON', '[', 'awesome', 5.05, 1986, ']']) = BSONAWESOMEBIN);
+  Check(Bson('{BSON:["awesome",5.05,1986]}', [], []) = awesomeBin);
+  Check(Bson('{ BSON : ["awesome", 5.05, 1986] }', [], []) = awesomeBin);
+  Check(Bson('{ ''BSON'' : ["awesome", 5.05, 1986] } ', [], []) = awesomeBin);
+  Check(Bson('{%:[?,?,?]}', ['BSON'], ['awesome', 5.05, 1986]) = awesomeBin);
+  Check(Bson('{%:?}', ['BSON'], [_Arr(['awesome', 5.05, 1986])]) = awesomeBin);
+  Check(Bson(['BSON', '[', 'awesome', 5.05, 1986, ']']) = awesomeBin);
   temp := Bson(['BSON', '[', 'awesome', 5.05, 1986]);
-  Check(temp = BSONAWESOMEBIN);
+  Check(temp = awesomeBin);
   temp := Bson(['BSON', '[', 'awesome', 5.05, 1986]);
-  Check(temp = BSONAWESOMEBIN);
+  Check(temp = awesomeBin);
   o2 := BsonVariantType[bsonDat];
   Check(VariantSaveJson(o2) = u);
   _Json('{BSON: ["test", 5.05, 1986]}', o);
@@ -9096,7 +9110,7 @@ type
 
 const
   // golden cases, covering the I/O matrix of spec-yaml-support.md
-  GOLDEN: array[0..31] of TYamlGoldenCase = (
+  GOLDEN: array[0..36] of TYamlGoldenCase = (
     (Name: 'empty-flow-map';
      Yaml: '{}';
      ExpectedJson: '{}'),
@@ -9239,10 +9253,34 @@ const
      // that depth continue the inner seq. Discovered via GitHub REST spec
      // line 223996 (sort_by: [[123, asc], [456, desc]]).
      Yaml: 'k:'#10'- - 1'#10'  - 2'#10'- - 3'#10'  - 4';
-     ExpectedJson: '{"k":[[1,2],[3,4]]}')
+     ExpectedJson: '{"k":[[1,2],[3,4]]}'),
+    (Name: 'flow-quoted-double-seq';
+     // regression: SkipQuoted() already advances past the ending quote
+     Yaml: 'k: ["a", "b"]';
+     ExpectedJson: '{"k":["a","b"]}'),
+    (Name: 'flow-quoted-map-value';
+     Yaml: '{k: "a", j: 1}';
+     ExpectedJson: '{"k":"a","j":1}'),
+    (Name: 'flow-quoted-embedded-comma';
+     // commas within quotes must not split a flow value
+     Yaml: 'k: [''a,b'', "c,d"]';
+     ExpectedJson: '{"k":["a,b","c,d"]}'),
+    (Name: 'flow-quoted-nested-map';
+     Yaml: 'k: ["a", {j: "b"}, ''c'']';
+     ExpectedJson: '{"k":["a",{"j":"b"},"c"]}'),
+    (Name: 'flow-plain-mid-scalar-quotes';
+     // quotes inside a plain scalar are literal characters
+     Yaml: 'k: [it''s, x"y]';
+     ExpectedJson: '{"k":["it''s","x\"y"]}')
   );
 
-  ERRORS: array[0..8] of TYamlGoldenCase = (
+  ERRORS: array[0..21] of TYamlGoldenCase = (
+    (Name: 'quoted-double-json-injection';
+     Yaml: 'user: "x","admin":true,"y":"z"';
+     ExpectedJson: ''),
+    (Name: 'quoted-single-json-injection';
+     Yaml: 'user: ''x'',"admin":true';
+     ExpectedJson: ''),
     (Name: 'anchor';
      Yaml: 'a: &ref 1'#10'b: *ref';
      ExpectedJson: ''),
@@ -9270,6 +9308,43 @@ const
     (Name: 'explicit-indent-zero';
      // YAML 1.2 §8.1.1.1 forbids 0 as an explicit indent indicator
      Yaml: 'k: |0'#10'  x';
+     ExpectedJson: ''),
+    // Embedded #0 is forbidden anywhere in the YAML input buffer
+    (Name: 'nul-float';
+     Yaml: 'a: 1.2'#0'.3'#10'b: 2';
+     ExpectedJson: ''),
+    (Name: 'nul-boolean';
+     Yaml: 'b: true'#0#10'i: 3';
+     ExpectedJson: ''),
+    (Name: 'nul-exponent';
+     Yaml: 'c: 1e3'#0#10'admin: false';
+     ExpectedJson: ''),
+    (Name: 'nul-after-newline';
+     // regression: old FillLines() stopped at lineStart^ = #0
+     Yaml: 'a: 1'#10#0'admin: true';
+     ExpectedJson: ''),
+    (Name: 'nul-trailing-byte';
+     // #0 is within length(Yaml), not the implicit terminator
+     Yaml: 'a: 1'#0;
+     ExpectedJson: ''),
+    (Name: 'nul-inside-quoted-scalar';
+     Yaml: 'a: "ab'#0'cd"';
+     ExpectedJson: ''),
+    (Name: 'nul-inside-literal-block';
+     Yaml: 'k: |'#10'  ab'#0'cd';
+     ExpectedJson: ''),
+    (Name: 'nul-after-crlf';
+     Yaml: 'a: 1'#13#10#0'b: 2';
+     ExpectedJson: ''),
+     // Quoted flow scalars must have a valid separator afterwards
+    (Name: 'flow-quoted-missing-comma';
+     Yaml: 'k: ["a" "b"]';
+     ExpectedJson: ''),
+    (Name: 'flow-map-quoted-missing-comma';
+     Yaml: '{k: "a" j: 1}';
+     ExpectedJson: ''),
+    (Name: 'flow-quoted-trailing-text';
+     Yaml: 'k: ["a"junk, "b"]';
      ExpectedJson: '')
   );
 
@@ -9345,9 +9420,20 @@ end;
 procedure TTestCoreProcess.YamlErrorCases;
 var
   i: PtrInt;
+  json: RawUtf8;
 begin
   for i := low(ERRORS) to high(ERRORS) do
-    YamlExpectRaise(Join([' for ', ERRORS[i].Name]), ERRORS[i].Yaml);
+  with ERRORS[i] do
+  begin
+    YamlExpectRaise(Join([' for ', Name]), Yaml);
+    if not IdemPChar(pointer(Name), 'NUL-') then
+      continue;
+    CheckNotEqual(StrLen(pointer(Yaml)), length(Yaml), Name);
+    json := SmallUInt32Utf8[i];
+    CheckUtf8(not TryYamlToJson(Yaml, json), // specific call to detect #0
+      'YamlToJson should reject %', [Name]);
+    CheckEqual(json, '');
+  end;
 end;
 
 procedure TTestCoreProcess.YamlFileApi;
@@ -9403,6 +9489,13 @@ begin
     YamlMaxDepth := 100;
     YamlToVariant(yaml, doc);
     Check(doc.Count <> 0,  'depth 20 must parse when YamlMaxDepth=100');
+    // Compact one-line nested sequences must use the same depth limit.
+    yaml := '';
+    for i := 1 to 100 do
+      Append(yaml, '- ');
+    Append(yaml, 'x');
+    YamlMaxDepth := 8;
+    YamlExpectRaise('compact nested sequence must respect YamlMaxDepth', yaml);
   finally
     YamlMaxDepth := saved;
   end;
@@ -11487,6 +11580,41 @@ var
     end;
   end;
 
+  procedure StreamLevel0;
+  // AddDeflatedStream(..., CompressLevel=0) should create a valid entry
+  var
+    w: TRawByteStringStream;
+    s: TStream;
+    z: TZipWrite;
+  begin
+    w := TRawByteStringStream.Create;
+    try
+      z := TZipWrite.Create(w);
+      try
+        s := z.AddDeflatedStream('lvl0.txt', 0, 0);
+        try
+          s.WriteBuffer(pointer(Data)^, length(Data));
+        finally
+          s.Free;
+        end;
+      finally
+        z.Free;
+      end;
+      with TZipRead.Create(pointer(w.DataString), length(w.DataString)) do
+      try
+        if CheckEqual(Count, 1, 'lvl0 count') then
+        begin
+          Check(TestAll, 'lvl0 testall');
+          Check(UnZip(0) = Data, 'lvl0 unzip');
+        end;
+      finally
+        Free;
+      end;
+    finally
+      w.Free;
+    end;
+  end;
+
   procedure DataDescriptorLastEntry;
   // some tools (e.g. LibreOffice for .xlsx) set FLAG_DATADESCRIPTOR on all
   // entries: retrieving the last one from a memory buffer should not need fSource
@@ -11596,6 +11724,29 @@ begin
   CheckEqual(FileSize(FN), SizeOf(minim), 'TZipWrite void .zip');
   Check(DeleteFile(FN));
   DataDescriptorLastEntry;
+  // AddEmptyFolder() should store crc32=0 for a folder entry (no data)
+  S := TRawByteStringStream.Create;
+  try
+    with TZipWrite.Create(S) do
+    try
+      AddEmptyFolder('emptydir\');
+      CheckEqual(Count, 1, 'emptydir1');
+    finally
+      Free;
+    end;
+    with TZipRead.Create(pointer(S.DataString), length(S.DataString)) do
+    try
+      CheckEqual(Count, 1, 'emptydir2');
+      Check(Entry[0].dir^.fileInfo.zcrc32 = 0, 'emptydir crc');
+      Check(Entry[0].local^.fileInfo.zcrc32 = 0, 'emptydir local crc');
+      Check(TestAll, 'emptydir testall');
+    finally
+      Free;
+    end;
+  finally
+    S.Free;
+  end;
+  StreamLevel0;
   // onprog := TStreamRedirect.ProgressInfoToConsole;
   onprog := TSynLog.ProgressInfo;
   for m := 1 to 2 do

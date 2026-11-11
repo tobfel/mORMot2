@@ -39,6 +39,7 @@ uses
   mormot.core.json,
   mormot.crypt.core,
   mormot.crypt.secure,
+  mormot.crypt.factory,
   mormot.crypt.ecc256r1,
   mormot.crypt.ecc,
   mormot.crypt.rsa;
@@ -717,6 +718,10 @@ type
     procedure ToParsedInfo(out Info: TX509Parsed);
     /// returns the raw X.509 extensions as binary OID and Value pairs
     function GetExtensions: TCryptCustomExts;
+    /// compute the raw certificate digest from a DER certificate or PEM chain
+    // - for PEM input, selects the first CERTIFICATE block (the leaf certificate)
+    // - will assume SHA-512 for Ed25519 signature, as defined by RFC 8032
+    class function HashForChannelBinding(const Cert: RawByteString): RawByteString;
     /// true if the Certificate Issuer is also its Subject
     property IsSelfSigned: boolean
       read fIsSelfSigned;
@@ -1216,7 +1221,7 @@ type
   protected
     fX509: TX509;
     // may be nil or a TCryptPrivateKeyRsa, TCryptPrivateKeyEcc,
-    // TCryptPrivateKeyOpenSsl or a TCryptPrivateKeyPkcs11
+    // TCryptPrivateKeyOpenSsl, TCryptPrivateKeyPkcs11 or TCryptPrivateKeyCng
     fPrivateKey: ICryptPrivateKey;
     // overriden to use a faster search with no temporary memory allocation
     class procedure InternalFind(Cert: PICryptCert; const Value: RawByteString;
@@ -2944,6 +2949,33 @@ begin
   Signed.AfterModified;
 end;
 
+class function TX509.HashForChannelBinding(const Cert: RawByteString): RawByteString;
+var
+  der: TCertDer;
+  x: TX509;
+  size: PtrInt;
+  dig: THash512Rec;
+begin
+  FastAssignNew(result);
+  der := PemToCert(Cert);
+  if der = '' then
+    der := Cert;  // assume a DER was specified
+  if not AsnDecChunk(Cert) then // basic input validation
+    exit;
+  x := TX509.Create;
+  try
+    if not x.LoadFromDer(Der) or
+       (x.SignatureAlgorithm = xsaNone) then
+      exit;
+    size := mormot.crypt.secure.HashForChannelBinding(der,
+      HASH_TXT[XSA_TO_HF[x.SignatureAlgorithm]], dig);
+    if size <> 0 then
+      FastSetRawByteString(result, @dig, size);
+  finally
+    x.Free;
+  end;
+end;
+
 
 { **************** X.509 Certificate Revocation List (CRL) }
 
@@ -4278,7 +4310,7 @@ begin
     case Content of
       cccPrivateKeyOnly:
         begin
-          // may use standard PKCS#8 PBES2 or mormot.crypt.secure encryption
+          // try standard PKCS#8 PBES2 and our mormot.crypt.secure encryption
           der := PemToDer(Saved); // see also TCryptPrivateKey.Load
           fPrivateKey := CryptPrivateKey[XKA_TO_CKA[AlgoXka]].Create; // replace
           if fPrivateKey.Load(

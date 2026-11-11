@@ -286,6 +286,7 @@ type
     fOptions: TPollAsyncSocketsOptions;
     fTerminated: boolean;
     fReadWaitMs: integer;
+    fReadMaxBytes: integer;
     fOnStart: TOnPollAsyncFunc;
     fOnFirstRead, fOnStop: TOnPollAsyncProc;
     fWaitingWrite: TPollAsyncConnections; // to implement soWaitWrite
@@ -394,6 +395,14 @@ type
     // - use with care: performance degrades with highly concurrent HTTP/1.1
     property ReadWaitMs: integer
       read fReadWaitMs write fReadWaitMs;
+    /// how many bytes ProcessRead() may receive before calling OnRead()
+    // - i.e. the maximum fRd input buffered per connection between two OnRead()
+    // calls, so that e.g. a big request body is streamed by blocks of this size
+    // instead of being retrieved as a whole when the client sends faster than
+    // the server reads it, e.g. on the loopback or a loaded server
+    // - equals 1MB by default - but at least one recv() of up to 32KB is made
+    property ReadMaxBytes: integer
+      read fReadMaxBytes write fReadMaxBytes;
     {$ifdef USE_WINIOCP}
     /// low-level access to the IOCP polling class used for all events
     property IocpRecvSend: TWinIocp
@@ -1108,6 +1117,7 @@ type
     fRequestClass: THttpServerRequestClass;
     fInterning: PRawUtf8InterningSlot;
     fInterningTix: cardinal;
+    fHttpDateNowUtcSafe: TLightLock;
     fExecuteEvent: TSynEvent;
     fClientSockets: THttpAsyncClientConnections; // allocated when needed
     fHttpDateNowUtc: THttpDateNowUtc;            // set by IdleEverySecond
@@ -1900,6 +1910,7 @@ constructor TPollAsyncSockets.Create(aOptions: TPollAsyncSocketsOptions;
   aThreadCount: integer);
 begin
   fOptions := aOptions;
+  fReadMaxBytes := 1 shl 20; // trigger OnRead() after 1MB by default
   inherited Create;
   {$ifdef USE_WINIOCP}
   fIocpRecvSend := TWinIocp.Create(aThreadCount,
@@ -2368,7 +2379,11 @@ begin
              (fProcessingRead < 4) then // < 4 for "wrk -c 10000" not fail
             retryms := 50;
         end;
-        // receive as much data as possible into connection.fRd buffer
+        // receive up to fReadMaxBytes of pending data into connection.fRd
+        // - any remaining input is left in the socket buffer and will be
+        // notified again (level-triggered poll or IOCP re-subscription), as
+        // already after any recv() < SizeOf(temp): so a fast client won't
+        // make fRd grow without limit before OnRead can consume it
         repeat
           if fTerminated or
              (connection.fSocket = nil) then
@@ -2408,7 +2423,8 @@ begin
             connection.fRd.Reserve(1024); // minimal reusable fRd.Buffer
           connection.fRd.Append(@temp, recved);
           inc(added, recved);
-        until recved < SizeOf(temp);
+        until (recved < SizeOf(temp)) or
+              (added + SizeOf(temp) > fReadMaxBytes);
         // process the received data by calling connection.OnRead
         if added > 0 then
         begin
@@ -4599,7 +4615,7 @@ begin
   if (fServer <> nil) and
      (fServer.fCompressList.Algo <> nil) then
     fHttp.CompressList := @fServer.fCompressList;
-  fHttp.ProcessInit; // ready to process this HTTP request
+  fHttp.ResetZero; // ready to process this HTTP request
   fHttp.State := hrsConnect;
   // inherited AfterCreate; // void parent method
 end;
@@ -4906,7 +4922,11 @@ end;
 
 procedure THttpAsyncServerConnection.HttpInit;
 begin
-  fHttp.ProcessInit; // ready to process a new HTTP request
+  fHttp.ResetZero; // ready to process a new HTTP request
+  fHttp.State := hrsGetCommand; // just like fHttp.Reset: not hrsNoStateMachine
+  // fHttp.Reset did clear the options of the previous request on this
+  // kept-alive connection, e.g. hroHeadersUnfiltered from hsoHeadersUnfiltered
+  fHttp.Options := fServer.fDefaultRequestOptions;
   fHeadersSec := 0;
   fBytesRecv := 0; // reset stats
   fBytesSend := 0;
@@ -4918,7 +4938,6 @@ begin
   fHttp.Interning := fServer.fInterning;
   if fServer.fCompressList.Algo <> nil then
     fHttp.CompressList := @fServer.fCompressList;
-  fHttp.Options := fServer.fDefaultRequestOptions;
   if fServer.fServerKeepAliveTimeOutSec <> 0 then // 0 = no keep alive
     fKeepAliveMaxSec := fServer.Async.fLastOperationSec +
                         fServer.fServerKeepAliveTimeOutSec;
@@ -5314,13 +5333,11 @@ begin
     include(fHttp.ResponseFlags, rfContentStreamNeedFree);
     if strm.InheritsFrom(TFileStreamEx) then
       fHttp.SetContentInputName(TFileStreamEx(strm));
-    // needed to track and limit the cumulated chunked body size
-    fHttp.ContentMaxSize := fServer.MaximumAllowedContentLength;
   end;
 end;
 
 const
-  HTTP_CONTINUE_RESPONSE: string[25] = 'HTTP/1.1 100 Continue'#13#10#13#10;
+  HTTP_CONTINUE_RESPONSE: TShort31 = 'HTTP/1.1 100 Continue'#13#10#13#10;
 
 function THttpAsyncServerConnection.DoHeaders: TPollAsyncSocketOnReadWrite;
 var
@@ -5372,6 +5389,10 @@ begin
       exit;
     end;
   end;
+  // track and limit the cumulated size of a chunked body - whatever the method
+  // and whether OnBodyDownload supplies a stream for it or not: the header
+  // check above only applies to an explicit Content-Length
+  fHttp.ContentMaxSize := fServer.MaximumAllowedContentLength;
   // OnBodyDownload callback can supply a stream for the body - even for HEAD
   if not (hfConnectionUpgrade in fHttp.HeaderFlags) and
      Assigned(fServer.fOnBodyDownload) then
@@ -5681,7 +5702,6 @@ procedure THttpAsyncServer.AsyncResponse(Handle: TConnectionAsyncHandle;
   const Content, ContentType: RawUtf8; Status: cardinal);
 var
   c: THttpAsyncServerConnection;
-  res: TPollAsyncSocketOnReadWrite;
 begin
   // thread-safe locate the connection using O(log(n)) Handle binary search
   c := fAsync.ConnectionFindAndWaitLock(Handle, {LockWrite=}false, {ms=}40);
@@ -5701,11 +5721,7 @@ begin
     c.fRequest.OutContentStreamDiscard; // delayed Content replace any OutStream
     c.fRequest.OutContent := Content;
     c.fRequest.OutContentType := ContentType;
-    if hfConnectionClose in c.fHttp.HeaderFlags then
-      res := soClose
-    else
-      res := soContinue;
-    if c.DoResponse(res) = soClose then
+    if c.DoResponse(soContinue) = soClose then // don't involve hfConnectionClose
     begin
       if acoVerboseLog in fAsync.fOptions then
         fAsync.DoLog(sllTrace, 'final AsyncResponse: closing #%', [Handle], self);
@@ -5761,7 +5777,9 @@ begin
   if hsoIncludeDateHeader in fOptions then
   begin
     FromGlobalTime(T, {local=}false);
+    fHttpDateNowUtcSafe.Lock;
     T.ToHttpDateShort(fHttpDateNowUtc, 'GMT'#13#10, 'Date: ');
+    fHttpDateNowUtcSafe.UnLock;
   end;
   // ensure log file(s) are flushed/consolidated if needed
   DoIdle(fAsync.fLastOperationMS, fAsync.fLastOperationSec);
@@ -5786,7 +5804,9 @@ end;
 
 procedure THttpAsyncServer.AppendHttpDate(var Dest: TRawByteStringBuffer);
 begin
+  fHttpDateNowUtcSafe.Lock;          // paranoid lock
   Dest.AppendShort(fHttpDateNowUtc); // set by IdleEverySecond
+  fHttpDateNowUtcSafe.UnLock;
 end;
 
 function THttpAsyncServer.GetHttpQueueLength: cardinal;

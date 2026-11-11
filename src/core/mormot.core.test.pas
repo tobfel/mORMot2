@@ -169,6 +169,7 @@ type
     /// called before all published properties are executed
     procedure Setup; virtual;
     /// just like Setup but allow to return false and bypass the whole tests
+    // - can also overwrite the default RTTI-derivated fIdent value
     function Prepare: boolean; virtual;
     /// called after all published properties are executed
     // - WARNING: this method should be re-entrant - so using FreeAndNil() is
@@ -1042,7 +1043,7 @@ function TSynTestCase.CheckMatchAny(const Value: RawUtf8; const Values: array of
   CaseSentitive, ExpectedResult: boolean; const msg: string): boolean;
 begin
   result := (FindRawUtf8(Values, Value, CaseSentitive) >= 0) = ExpectedResult;
-  Check(result);
+  CheckUtf8(result, '%=%', [msg, Value]);
 end;
 
 function TSynTestCase.CheckRaised(const Method: TOnTestCheck;
