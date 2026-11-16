@@ -83,6 +83,8 @@ type
     procedure IntegerCoordinates;
     procedure EncryptionAes256;
     procedure Pdf20File;
+    procedure VersionAfterHeader;
+    procedure PdfA1XrefTable;
   end;
 
 implementation
@@ -4454,6 +4456,115 @@ begin
   end;
   Check(refused, 'RC4 is not allowed in PDF 2.0');
   {$endif NO_USE_PDFSECURITY}
+end;
+
+// a document streamed from a 1.4 or 1.5 header, a page flushed: then on
+// page 2 either vpEnforcePrintScaling, or GeneratePdf15File set
+function StreamedAfterHeader(Pdf15, PrintScaling: boolean): RawByteString;
+var
+  pdf: TPdfDocument;
+  stream: TMemoryStream;
+begin
+  stream := TMemoryStream.Create;
+  try
+    pdf := TPdfDocument.Create;
+    try
+      pdf.CompressionMethod := cmNone;
+      pdf.GeneratePdf15File := Pdf15;
+      pdf.SaveToStreamDirectBegin(stream);
+      pdf.AddPage;
+      pdf.SaveToStreamDirectPageFlush;
+      pdf.AddPage;
+      if PrintScaling then
+        pdf.Root.ViewerPreference := [vpEnforcePrintScaling]
+      else
+        pdf.GeneratePdf15File := true;
+      pdf.SaveToStreamDirectPageFlush;
+      pdf.SaveToStreamDirectEnd;
+    finally
+      pdf.Free;
+    end;
+    SetString(result, PAnsiChar(stream.Memory), stream.Size);
+  finally
+    stream.Free;
+  end;
+end;
+
+procedure TTestUiPdf.VersionAfterHeader;
+var
+  s: RawByteString;
+begin
+  // a format raised after the header: the catalog's /Version, written last
+  s := StreamedAfterHeader(false, true);
+  Check(copy(s, 1, 8) = '%PDF-1.4', 'print scaling: the header written');
+  Check(PosEx('/Enforce', s) > 0, 'print scaling: /Enforce');
+  Check(PosEx('/Version/1.6', s) > 0, 'print scaling: the catalog /Version');
+  Check((PosEx('/XRef', s) = 0) and
+        (PosEx(#10'xref'#10, s) > 0), 'print scaling: an xref table');
+  // a 1.5 header keeps its cross-reference stream
+  s := StreamedAfterHeader(true, true);
+  Check((PosEx('/Version/1.6', s) > 0) and
+        (PosEx('/XRef', s) > 0), 'print scaling: 1.5, an xref stream');
+  // GeneratePdf15File set after the header: the file follows the header
+  s := StreamedAfterHeader(false, false);
+  Check((copy(s, 1, 8) = '%PDF-1.4') and
+        (PosEx('/Version', s) = 0), 'GeneratePdf15File late: no version');
+  Check((PosEx('/XRef', s) = 0) and
+        (PosEx(#10'xref'#10, s) > 0), 'GeneratePdf15File late: an xref table');
+end;
+
+// one empty page saved at Level, with vpEnforcePrintScaling (1.6) or
+// GeneratePdf15File (1.5)
+function SavedAtLevel(Level: TPdfALevel; PrintScaling: boolean): RawByteString;
+var
+  pdf: TPdfDocument;
+  stream: TMemoryStream;
+begin
+  stream := TMemoryStream.Create;
+  try
+    pdf := TPdfDocument.Create(false, 0, Level);
+    try
+      pdf.CompressionMethod := cmNone;
+      if PrintScaling then
+        pdf.Root.ViewerPreference := [vpEnforcePrintScaling]
+      else
+        pdf.GeneratePdf15File := true;
+      pdf.AddPage;
+      pdf.SaveToStream(stream);
+    finally
+      pdf.Free;
+    end;
+    SetString(result, PAnsiChar(stream.Memory), stream.Size);
+  finally
+    stream.Free;
+  end;
+end;
+
+function HasXrefTable(const s: RawByteString): boolean;
+begin
+  result := (PosEx('/XRef', s) = 0) and
+            (PosEx('/ObjStm', s) = 0) and
+            (PosEx(#10'xref'#10, s) > 0) and
+            (PosEx('trailer', s) > 0);
+end;
+
+procedure TTestUiPdf.PdfA1XrefTable;
+var
+  s: RawByteString;
+begin
+  // PDF/A-1 forbids an xref stream (veraPDF 6.1.4-3), whatever the header
+  s := SavedAtLevel(pdfa1B, true);
+  Check((copy(s, 1, 8) = '%PDF-1.6') and
+        (PosEx('/Enforce', s) > 0) and
+        HasXrefTable(s), 'PDF/A-1b print scaling: an xref table');
+  s := SavedAtLevel(pdfa1A, false);
+  Check((copy(s, 1, 8) = '%PDF-1.5') and
+        HasXrefTable(s), 'PDF/A-1a GeneratePdf15File: an xref table');
+  // the other levels keep their streams
+  s := SavedAtLevel(pdfa2B, false);
+  Check(PosEx('/XRef', s) > 0, 'PDF/A-2b: an xref stream');
+  s := SavedAtLevel(pdfaNone, false);
+  Check(PosEx('/XRef', s) > 0, 'GeneratePdf15File: an xref stream');
 end;
 
 {$else}
