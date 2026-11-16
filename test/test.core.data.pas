@@ -98,6 +98,7 @@ uses
   mormot.core.threads,
   mormot.core.log,
   mormot.core.zip,
+  mormot.crypt.zip,
   mormot.core.test,
   mormot.lib.z,
   mormot.lib.lizard,
@@ -117,7 +118,7 @@ uses
   mormot.rest.server,
   mormot.net.client,
   mormot.net.server,
-  mormot.net.async,
+  mormot.net.proxy,
   mormot.net.ldap,
   test.core.base;
 
@@ -155,6 +156,8 @@ type
     procedure I18nIniAndFiles;
     /// the FPC resourcestring table rewriting channel
     procedure I18nResourceStrings;
+    /// validate JOP like processing
+    procedure TestJopProcess;
   public
     /// SAX-level tokens over elements, attributes, text and CData
     procedure XmlSaxTokens;
@@ -506,6 +509,7 @@ end;
 procedure TTestCoreProcess.Variants;
 var
   v: Variant;
+  c: currency;
   u: SynUnicode;
   i64: Int64;
   d: double;
@@ -822,6 +826,57 @@ begin
   CheckEqual(i64, 12);
   Check(AnyVariantToDouble(v, d));
   Check(d = 12.0, '12');
+  // VariantSaveJson: Boolean and TDateTime regression (#766)
+  v := true;
+  CheckEqual(vd.VType, varBoolean);
+  CheckEqual(VariantSaveJson(v), 'true');
+  CheckEqual(VariantSaveJson(v, twNone), 'true');
+  v := false;
+  CheckEqual(vd.VType, varBoolean);
+  CheckEqual(VariantSaveJson(v), 'false');
+  CheckEqual(VariantSaveJson(v, twNone), 'false');
+  // Date and time
+  dt := EncodeDate(2030, 1, 1) + EncodeTime(8, 30, 45, 0);
+  v := VarAsType(dt, varDate);
+  CheckEqual(vd.VType, varDate);
+  CheckEqual(VariantSaveJson(v), '"2030-01-01T08:30:45"');
+  CheckEqual(VariantSaveJson(v, twNone), '2030-01-01T08:30:45');
+  // Date only
+  v := VarAsType(EncodeDate(2030, 1, 1), varDate);
+  CheckEqual(VariantSaveJson(v), '"2030-01-01"');
+  CheckEqual(VariantSaveJson(v, twNone), '2030-01-01');
+  // Time only
+  v := VarAsType(EncodeTime(8, 30, 45, 0), varDate);
+  CheckEqual(VariantSaveJson(v), '"T08:30:45"');
+  CheckEqual(VariantSaveJson(v, twNone), 'T08:30:45');
+  // Milliseconds are not serialized
+  dt := EncodeDate(2030, 1, 1) + EncodeTime(8, 30, 45, 123);
+  v := VarAsType(dt, varDate);
+  CheckEqual(VariantSaveJson(v), '"2030-01-01T08:30:45"');
+  // Zero TDateTime
+  v := VarAsType(0, varDate);
+  CheckEqual(vd.VType, varDate);
+  CheckEqual(VariantSaveJson(v), 'null');
+  CheckEqual(VariantSaveJson(v, twNone), 'null');
+  // Reusing the same destination RawUtf8
+  s := 'previous value';
+  v := true;
+  VariantSaveJson(v, twJsonEscape, s);
+  CheckEqual(s, 'true');
+  v := false;
+  VariantSaveJson(v, twJsonEscape, s);
+  CheckEqual(s, 'false');
+  v := VarAsType(EncodeDate(2030, 1, 1), varDate);
+  VariantSaveJson(v, twJsonEscape, s);
+  CheckEqual(s, '"2030-01-01"');
+  v := VarAsType(0, varDate);
+  VariantSaveJson(v, twJsonEscape, s);
+  CheckEqual(s, 'null');
+  // Currency serialization remains unchanged
+  c := 1.5;
+  v := c;
+  CheckEqual(vd.VType, varCurrency);
+  CheckEqual(VariantSaveJson(v), '1.50');
 end;
 
 type
@@ -1151,6 +1206,562 @@ begin
     Result := FormatVariant('a=%,b=%', [U['a'], i['b']]);
 end;
 
+procedure TTestCoreProcess.TestJopProcess;
+
+  procedure TestJop(const src, exp: RawUtf8; nest: boolean = true);
+  var
+    j, k: RawUtf8;
+    s: TTextWriterJsonFormat;
+  begin
+    j := JsonPreprocess(src, jsonUnquotedPropNameCompact);
+    Check(j <> '');
+    CheckEqual(j, exp, src);
+    if nest then
+      for s := low(s) to high(s) do
+      begin
+        k := JsonPreprocess(src, s);
+        if s = jsonCompact then
+          Check(IsValidJson(k, {strict=}true), 'valid');
+        if s = jsonUnquotedPropNameCompact then
+          CheckEqual(k, j)
+        else
+          CheckEqual(JsonReformat(k, jsonUnquotedPropNameCompact), j);
+      end;
+  end;
+
+  procedure TestJopText;
+  var
+    mainFile, outerFile, innerFile: TFileName;
+    insertFile, rawFile: TFileName;
+    src: RawUtf8;
+  begin
+    // P0 #1: basic text processing and pointer handling
+    CheckEqual(TextPreprocess('hello world'), 'hello world');
+    CheckEqual(JsonPreprocess('{a:"unterminated', jsonCompact), '');
+    CheckEqual(TextPreprocess('a$b'), 'a$b');
+    CheckEqual(TextPreprocess('a$ident$b'), 'a$ident$b');
+    CheckEqual(TextPreprocess('a$(missing)b'), 'ab');
+    CheckEqual(TextPreprocess(
+      '$$'#10 +
+      'name = world'#10 +
+      '$$'#10 +
+      'Hello $(name)!'),
+      'Hello world!');
+    CheckEqual(TextPreprocess(
+      '$$'#10 +
+      'value = 42'#10 +
+      '$$'#10 +
+      'before $(value) middle $(value) after'),
+      'before 42 middle 42 after');
+    CheckEqual(TextPreprocess(
+      '$$'#10 +
+      'enabled = true'#10 +
+      '$$'#10 +
+      'A$if enabled$B$else$C$endif$D'),
+      'ABD');
+    // Verbatim $$$ ... $$$ sections
+    CheckEqual(TextPreprocess(
+      '$$'#10 +
+      'answer = 42'#10 +
+      '$$'#10 +
+      '$$$'#10 +
+      'raw $(answer)'#10 +
+      '$$$'#10 +
+      'done=$(answer)'),
+      'raw $(answer)'#10 +
+      'done=42');
+    // Missing $endif$ must not cause an access violation
+    CheckEqual(TextPreprocess(
+      'before $if missing$skipped'),
+      'before ');
+    // Normal conditional skipping remains unchanged
+    CheckEqual(TextPreprocess(
+      'before $if missing$skipped$else$kept$endif$ after'),
+      'before kept after');
+    // Valid nested fallback
+    CheckEqual(TextPreprocess(
+      'before $(missing|$(also|yes))'),
+      'before yes');
+    // Missing outer closing parenthesis: no out-of-bounds scan
+    CheckEqual(TextPreprocess(
+      'before $(missing|$(also)'),
+      'before ');
+    // # and // inside quoted DSL values are not treated as comments
+    TestJop(
+      '$$'#10 +
+      'message = "hello # world"'#10 +
+      '$$'#10 +
+      '{value:$(message)}',
+      '{value:"hello # world"}');
+    TestJop(
+      '$$'#10 +
+      'message = "hello // world"'#10 +
+      '$$'#10 +
+      '{value:$(message)}',
+      '{value:"hello // world"}');
+    TestJop(
+      '$$'#10 +
+      'name = "hello"'#10 +
+      'message = "$(name)#tag"'#10 +
+      '$$'#10 +
+      '{value:$(message)}',
+      '{value:"hello#tag"}');
+    // } or ] inside single-quoted template strings
+    TestJop(
+      '$$'#10 +
+      'obj = {text:''a}b'', count:2}'#10 +
+      '$$'#10 +
+      '{data:{$(obj)}}',
+      '{data:{text:"a}b",count:2}}');
+    // Unterminated strings inside a template must not read past #0
+    CheckEqual(TextPreprocess(
+      '$$'#10 +
+      'obj = {text:"unterminated'),
+      '');
+    CheckEqual(TextPreprocess(
+      '$$'#10 +
+      'obj = {text:''unterminated'),
+      '');
+    // P0 #2: recursive includes
+    mainFile   := WorkDir + 'jop-test-main.jop';
+    outerFile  := WorkDir + 'jop-test-outer.jop';
+    innerFile  := WorkDir + 'jop-test-inner.jop';
+    insertFile := WorkDir + 'jop-test-insert.jop';
+    rawFile    := WorkDir + 'jop-test-raw.jop';
+    try
+      // inner.jop: defines a variable, then uses it
+      Check(FileFromString(
+        '$$'#10 +
+        'answer = 42'#10 +
+        '$$'#10 +
+        '$if answer = 42$inner=$(answer)$endif$'#10,
+        innerFile));
+      // outer.jop: recursively includes inner.jop
+      Check(FileFromString(
+        '$$'#10 +
+        'include "jop-test-inner.jop"'#10 +
+        '$$'#10 +
+        'outer=$(answer)'#10,
+        outerFile));
+      // main.jop: recursively includes outer.jop
+      Check(FileFromString(
+        '$$'#10 +
+        'include "jop-test-outer.jop"'#10 +
+        '$$'#10 +
+        'result=$(answer)',
+        mainFile));
+      src := RawUtf8FromFile(mainFile);
+      CheckEqual(
+        TextPreprocess(src, [], WorkDir),
+        'inner=42'#10 +
+        'outer=42'#10 +
+        'result=42',
+        'recursive include');
+      // insert: file contents must NOT be preprocessed
+      Check(FileFromString(
+        'raw=$(answer)'#10 +
+        '$if answer$verbatim$endif$'#10,
+        rawFile));
+      Check(FileFromString(
+        '$$'#10 +
+        'answer = 42'#10 +
+        'insert "jop-test-raw.jop"'#10 +
+        '$$'#10 +
+        'after=$(answer)',
+        insertFile));
+      src := RawUtf8FromFile(insertFile);
+      CheckEqual(
+        TextPreprocess(src, [], WorkDir),
+        'raw=$(answer)'#10 +
+        '$if answer$verbatim$endif$'#10 +
+        'after=42',
+        'verbatim insert');
+    finally
+      DeleteFile(mainFile);
+      DeleteFile(outerFile);
+      DeleteFile(innerFile);
+      DeleteFile(insertFile);
+      DeleteFile(rawFile);
+    end;
+    Check(not TextPreprocessToFile('', mainFile));
+  end;
+
+  procedure TestJopP1;
+  var
+    tmp: TSynTempAdder;
+    src, actual: RawUtf8;
+    fn: TFileName;
+  begin
+    TestJop(
+      '$$'#10 +
+      'message = "a\"b"'#10 +
+      '$$'#10 +
+      '{value:$(message)}',
+      '{value:"a\"b"}');
+    TestJop(
+      '$$'#10 +
+      'message = "a\"b"'#10 +
+      '$$'#10 +
+      '{value:$"$(message)"}',
+      '{value:"a\"b"}');
+    // P1.2: remove comments without duplicating preceding content
+    TestJop(
+      '$$'#10 +
+      'obj = {'#10 +
+      '  a: 1  # comment'#10 +
+      '  b: 2'#10 +
+      '}'#10 +
+      '$$'#10 +
+      '{data: {$(obj)}}',
+      '{data:{a:1,b:2}}');
+    // P1.3: debug comments should be explicitly enabled
+    src := '$$'#10'a=1'#10'$$'#10'{a:$(a)}';
+    Check(PosEx('debug:', JsonPreprocess(src, json5)) = 0);
+    Check(PosEx('debug:', JsonPreprocess(src, json5, [jppDebugComment])) > 0);
+    // P1.4A: raw fallback content must be JSON-escaped
+    TestJop('{value:$"$(missing|a"b\c)"}', '{value:"a\"b\\c"}');
+    // P1.4A: numeric constants must not be modified
+    TestJop(
+      '$$'#10 +
+      'number = 42'#10 +
+      '$$'#10 +
+      '{value:$"$(number)"}',
+      '{value:"42"}');
+    // P1.4A: already-escaped strings must not be escaped twice
+    TestJop(
+      '$$'#10 +
+      'message = "a\"b"'#10 +
+      '$$'#10 +
+      '{value:$"$(message)"}',
+      '{value:"a\"b"}');
+    // P1.4B: escape raw values when registering a quoted definition
+    TestJop(
+      '$$'#10 +
+      'name = He said "hello"'#10 +
+      'message = "User: $(name)"'#10 +
+      '$$'#10 +
+      '{value:$(message)}',
+      '{value:"User: He said \"hello\""}');
+    // P1.4B: escape backslashes during early expansion
+    TestJop(
+      '$$'#10 +
+      'path = C:\work\test'#10 +
+      'message = "Path: $(path)"'#10 +
+      '$$'#10 +
+      '{value:$(message)}',
+      '{value:"Path: C:\\work\\test"}');
+    // P1.4B: constant values inside quoted definitions
+    TestJop(
+      '$$'#10 +
+      'number = 42'#10 +
+      'message = "number=$(number)"'#10 +
+      '$$'#10 +
+      '{value:$(message)}',
+      '{value:"number=42"}');
+    // Direct unit test for AdderJsonEscape()
+    // Covers quotes, backslashes, LF, TAB, #1 and embedded #0.
+    src := 'a'#0'"\'#10#9#1;
+    tmp.Init;
+    tmp.Add('[');
+    AdderJsonEscape(tmp, pointer(src), PUtf8Char(pointer(src)) + length(src));
+    tmp.Add(']');
+    tmp.Done(actual);
+    CheckEqual(actual, '[a\u0000\"\\\n\t\u0001]',
+      'AdderJsonEscape');
+    // Fast path: content without escaping
+    tmp.Init;
+    src := 'hello';
+    AdderJsonEscape(tmp, pointer(src), PUtf8Char(pointer(src)) + 5);
+    tmp.Done(actual);
+    CheckEqual(actual, 'hello', 'AdderJsonEscape plain');
+    // P1.1 / P1.5: include filename parsing and absolute paths
+    fn := ExpandFileName(WorkDir + 'jop-p1-include.txt');
+    Check(FileFromString('included'#10, fn));
+    try
+      // P1.1: unquoted filename followed by spaces and comment
+      CheckEqual(TextPreprocess(
+        '$$'#10 +
+        'include jop-p1-include.txt   # comment'#10 +
+        '$$'#10 +
+        'done', [], WorkDir),
+        'included'#10'done',
+        'include with comment');
+      // P1.1: trim trailing whitespace without a comment
+      CheckEqual(TextPreprocess(
+        '$$'#10 +
+        'include jop-p1-include.txt   '#10 +
+        '$$'#10 +
+        'done', [], WorkDir),
+        'included'#10'done',
+        'include trailing spaces');
+      // P1.5: absolute include without an IncludeRoot
+      src := '$$'#10 +
+        'include "' + StringToUtf8(fn) + '"'#10 +
+        '$$'#10 +
+        'done';
+      CheckEqual(TextPreprocess(src, [jppIncludeAbsolute]),
+        'included'#10'done',
+        'absolute include');
+      // P1.5: absolute include rejected without its flag
+      CheckEqual(TextPreprocess(src),
+        'done',
+        'absolute include rejected');
+      // Recognize // comments after unquoted include filenames
+      CheckEqual(TextPreprocess(
+        '$$'#10 +
+        'include jop-p1-include.txt // comment'#10 +
+        '$$'#10 +
+        'done', [], WorkDir),
+        'included'#10'done',
+        'include with // comment');
+    finally
+      DeleteFile(fn);
+    end;
+    // URL should not be truncated at //
+    TestJop(
+      '$$'#10 +
+      'url = https://example.org/api'#10 +
+      '$$'#10 +
+      '{url:$(url)}',
+      '{url:"https://example.org/api"}');
+    // A real trailing // comment must still be ignored
+    TestJop(
+      '$$'#10 +
+      'url = https://example.org/api // comment'#10 +
+      '$$'#10 +
+      '{url:$(url)}',
+      '{url:"https://example.org/api"}');
+    // Preserve # and // inside quoted definitions
+    TestJop(
+      '$$'#10 +
+      'url = "https://example.org/api#section"'#10 +
+      '$$'#10 +
+      '{url:$(url)}',
+      '{url:"https://example.org/api#section"}');
+    // Preserve URLs inside object templates
+    TestJop(
+      '$$'#10 +
+      'obj = {url:"https://example.org/api"}'#10 +
+      '$$'#10 +
+      '{data:{$(obj)}}',
+      '{data:{url:"https://example.org/api"}}');
+    TestJop(
+      '$$'#10 +
+      'url = https://example.org/api#section'#10 +
+      '$$'#10 +
+      '{url:$(url)}',
+      '{url:"https://example.org/api#section"}');
+    TestJop(
+      '$$'#10 +
+      'url = https://example.org/api # comment'#10 +
+      '$$'#10 +
+      '{url:$(url)}',
+      '{url:"https://example.org/api"}');
+    TestJop(
+      '$$'#10 +
+      'obj = {a:123}'#10 +
+      '$$'#10 +
+      '{data:{$(obj)}}',
+      '{data:{a:123}}');
+    TestJop(
+      '$$'#10'empty=""'#10'$$'#10 +
+      '[ $if empty$ 1 $else$ 2 $endif$ ]',
+      '[2]');
+    TestJop(
+      '$$'#10'empty=""'#10'$$'#10 +
+      '[ $ifdef empty$ 1 $else$ 2 $endif$ ]',
+      '[2]');
+    TestJop(
+      '$$'#10'filled="yes"'#10'$$'#10 +
+      '[ $ifdef filled$ 1 $else$ 2 $endif$ ]',
+      '[1]');
+  end;
+
+var
+  J: RawUtf8;
+begin
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$a$}',
+    '{a:1}');
+  TestJop(
+    '$$'#10'a= 1'#10'$$'#10'{a:$(a)}',
+    '{a:1}');
+  TestJop(
+    '$$'#10'a =1'#10'$$'#10'{a:$a$}',
+    '{a:1}');
+  TestJop(
+    '$$'#10' a = 1 '#10'$$'#10'{a:$a$}',
+    '{a:1}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$(os:name)}',
+    Join(['{a:"', OSVersionShort,'"}']));
+  J := GlobalInfoFind('net:mac');
+  if J <> '' then
+    TestJop(
+      '$$'#10'a=1'#10'$$'#10'{a:$net:mac$}',
+      Join(['{a:"', J,'"}']));
+  TestJop(
+    '$$'#10'a=b'#10'$$'#10'{a:$a$,b:$net:none$,c:$"$a$ ${os:nope|$a$}+"}',
+    '{a:"b",b:null,c:"b b+"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$a|0$,b:$b|2$}',
+    '{a:1,b:2}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$(a|b),b:$b|a$}',
+    '{a:1,b:"a"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$(a|b),b:$b|$(a)$}',
+    '{a:1,b:1}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$(a|b),b:$b|$(c|a)$}',
+    '{a:1,b:"a"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$(a|b),b:$(b|$(c|a))}',
+    '{a:1,b:"a"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$a$,b:$"$a$"}',
+    '{a:1,b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$a$,b:"$a$",c{d:$(a)}}',
+    '{a:1,b:"$a$",c:{d:1}}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$none|$a$$,b:$"$a$"}',
+    '{a:1,b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$none|"1"$,b:$"$a$"}',
+    '{a:"1",b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:$no|$ne|$a$$$,b:$"$a$"}',
+    '{a:1,b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{a:${no|${ne|${a}}},b:$"$a$"}',
+    '{a:1,b:"1"}');
+  J := '# comment'#10'$$'#10'# comment'#10'var=1'#10'a=number $var$'#10'$$'#10;
+  TestJop(
+    J + '[ 1 2 ]',
+    '[1,2]');
+  TestJop(
+    J + '[ $if a$ 1 $endif$ 2 ]',
+    '[1,2]');
+  TestJop(
+    J + '[ $if a$ 1 $if var$ 2 $endif$ $endif$ 3 ]',
+    '[1,2,3]');
+  TestJop(
+    J + '[ $if a$ 1 $if var$ 2 $else$ 3 $endif$ $else$ 4 $endif$5]',
+    '[1,2,5]');
+  TestJop(
+    J + '[ $if a$ 1 $if no$ 2 $else$ 3 $endif$ $else$ 4 $endif$ 5 ]',
+    '[1,3,5]');
+  TestJop(
+    J + '[ $if b$ 1 $if var$ 2 $else$ 3 $endif$ $else$ 4 $endif$ 5 ]',
+    '[4,5]');
+  J := '$$'#10'var=1'#10'a="number $var$" '#10'$$'#10;
+  TestJop(
+    J + '{a:$a$,b:$"$a$",c:$var$,d: $"$var$" ,e:"$var$",f:$"5432$var$0"}',
+    '{a:"number 1",b:"number 1",c:1,d:"1",e:"$var$",f:"543210"}');
+  TestJop(
+    J + '{$a$:0,b:$exe:arch$,c:$"http://toto/$exe:arch$",d:$os:none$,e:$"a$os:no$s"}',
+    '{"number 1":0,b:"' + CPU_ARCH_TEXT + '",c:"http://toto/' + CPU_ARCH_TEXT +
+     '",d:null,e:"as"}');
+  TestJop(
+    J + '# comment 2'#10'$$ section 2'#10'$ifdef a$ b=10'#10'$endif$'#10'$$'#10 +
+    '[$ifdef b$ 99 $else$ 0 $endif$ $(b) $(a) 100]',
+    '[99,10,"number 1",100]');
+  TestJop(
+    J + '$$ section 2'#10'$ifdef a$ b=1'#10'a=2'#10'$endif$'#10'$$'#10 +
+    '[$ifdef b$ $(b) $else$ 0 $endif$ $(b) $(a) 10]',
+    '[1,1,2,10]');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{ $if a$ a:$a$ $endif$, b:$"$a$"}',
+    '{a:1,b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{$if b$a:$a$$endif$b:$"$a$"}',
+    '{b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{$ifdef a$ $else$ a:$a$ $endif$, b:$"$a$"}',
+    '{b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{$ifdef a$$else$a:$a$$endif$b:$"$a$"}',
+    '{b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{ $if a = 1$ a:$a$ $endif$, b:$"$a$"}',
+    '{a:1,b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{ $if a = x$ a:$a$ $endif$, b:$"$a$"}',
+    '{b:"1"}');
+  TestJop(
+    '$$'#10'a=x'#10'$$'#10'{ $if a = x$ a:$a$ $endif$, b:$"$a$"}',
+    '{a:"x",b:"x"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{ $if a = $a$$ a:$a$ $endif$, b:$"$a$"}',
+    '{a:1,b:"1"}');
+  TestJop(
+    '$$'#10'a=xy'#10'$$'#10'{ $if a = $a$ $ a:$a$ $endif$, $a$:$"$a$"}',
+    '{a:"xy","xy":"xy"}', {nest=}false);
+  TestJop(
+    '$$'#10'a=xy'#10'$$'#10'{ $if yz > $a$ $ a:$a$ $endif$, $a$:$"$a$"}',
+    '{"xy":"xy"}', {nest=}false);
+  TestJop(
+    '$$'#10'a=xy'#10'$$'#10'{ $if a < yz $ a:$a$ $endif$, $a$:$"$a$"}',
+    '{a:"xy","xy":"xy"}', {nest=}false);
+  TestJop(
+    '$$'#10'a =1'#10'$$'#10'{ $if a <> 0 $ a:$a$ $endif$, b:$"$a$"}',
+    '{a:1,b:"1"}');
+  TestJop(
+    '$$'#10'a=10'#10'$$'#10'{ $if a > 5 $ a:$a$ $endif$, b:$"$a$"}',
+    '{a:10,b:"10"}');
+  TestJop(
+    '$$'#10'a=10'#10'five=5'#10'$$'#10'{ $if a > $five$ $ a:$a$ $endif$, b:$"$a$"}',
+    '{a:10,b:"10"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{$if a=1$a:$a$$endif$b:$"$a$"}',
+    '{a:1,b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{ $if a = 0$ a:$a$ $endif$, b:$"$a$"}',
+    '{b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'{ $if a = 10$ a:$a$ $endif$, b:$"$a$"}',
+    '{b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'b=$a$'#10'$$'#10'{ $if a = $b$$ a:$a$ $endif$, b:$"$a$"}',
+    '{a:1,b:"1"}');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'[ $ifdef a$ 1 $else$ 2 $endif$ ]', '[1]');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'[ $if a>0$ 1 $else$ 2 $endif$ ]', '[1]');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'[ $if a<10$ 1 $else$ 2 $endif$ ]', '[1]');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'[ $if a > 01 $ 1 $else$ 2 $endif$ ]', '[2]');
+  TestJop(
+    '$$'#10'a=10'#10'$$'#10'[ $if a > 9 $ 1 $else$ 2 $endif$ ]', '[1]');
+  TestJop(
+    '$$'#10'a=10'#10'$$'#10'[ $if a > 9 $ $else$ 2 $endif$ ]', '[]');
+  TestJop(
+    '[ $if cpu:threads > 0 $ 1 $else$ 2 $endif$ ]', '[1]');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'[ $ifdef a$ 1 $else$ 2 $endif$ ]', '[1]');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'[ $if a$ 1 $if no$ 2 $endif$ 4 $else$ 5 $endif$ 6 ]',
+    '[1,4,6]');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'[ $if a$ 1 $if no$ 2 $else$ 3 $endif$ 4 $else$ 5 $endif$ 6 ]',
+    '[1,3,4,6]');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'[ $if no$ 1 $if a$ 2 $else$ 3 $endif$ 4 $else$ 5 $endif$ 6 ]',
+    '[5,6]');
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'[ $if no$ 1 $if a$ 2 $else$ 3 $endif$ 4 $else$ 5 $else$ 6 $else$ 7 $endif$ 8 ]',
+    '[5,7,8]'); // $else$ is just a non-recursive toggle ;)
+  TestJop(
+    '$$'#10'a=1'#10'$$'#10'[ $if a$ 1 $if no$ 2 $endif$ 4 $else$ 5 $else$ 6 $endif$ 7 ]',
+    '[1,4,6,7]');
+  TestJop(
+    '[ $if no$ 1 $if no$ 2 $else$ 3 $endif$ 4 $else$ 5 $endif$ 6 ]',
+    '[5,6]');
+  TestJopText;
+  TestJopP1;
+end;
 
 
 { TCollTestsI }
@@ -2138,7 +2749,6 @@ var
   O, O2: TPersistentToJson;
   E: TSynBackgroundThreadProcessStep;
   EndOfObject: AnsiChar;
-var
   Va, Vb: Variant;
   c: currency;
 
@@ -2944,30 +3554,10 @@ var
     end;
   end;
 
-  procedure TestJop(const src, exp: RawUtf8; nest: boolean = true);
-  var
-    j, k: RawUtf8;
-    s: TTextWriterJsonFormat;
-  begin
-    j := JsonPreprocess(src, jsonUnquotedPropNameCompact);
-    Check(j <> '');
-    CheckEqual(j, exp, src);
-    if nest then
-      for s := low(s) to high(s) do
-      begin
-        k := JsonPreprocess(src, s);
-        if s = jsonCompact then
-          Check(IsValidJson(k, {strict=}true), 'valid');
-        if s = jsonUnquotedPropNameCompact then
-          CheckEqual(k, j)
-        else
-          CheckEqual(JsonReformat(k, jsonUnquotedPropNameCompact), j);
-      end;
-  end;
-
 begin
   JsonConstants;
   TestSimpleEnum;
+  TestJopProcess;
   TestJsonArrayAsCsv('', '');
   TestJsonArrayAsCsv('123', '');
   TestJsonArrayAsCsv('[1]', '1');
@@ -3465,185 +4055,6 @@ begin
   CheckEqual(JsonReformat(
     #10' // test'#10' # ignored'#10'one: 1'#10'"two": 2'#10, jsonCompact),
     '{"one":1,"two":2}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$a$}',
-    '{a:1}');
-  TestJop(
-    '$$'#10'a= 1'#10'$$'#10'{a:$(a)}',
-    '{a:1}');
-  TestJop(
-    '$$'#10'a =1'#10'$$'#10'{a:$a$}',
-    '{a:1}');
-  TestJop(
-    '$$'#10' a = 1 '#10'$$'#10'{a:$a$}',
-    '{a:1}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$(os:name)}',
-    Join(['{a:"', OSVersionShort,'"}']));
-  J := GlobalInfoFind('net:mac');
-  if J <> '' then
-    TestJop(
-      '$$'#10'a=1'#10'$$'#10'{a:$net:mac$}',
-      Join(['{a:"', J,'"}']));
-  TestJop(
-    '$$'#10'a=b'#10'$$'#10'{a:$a$,b:$net:none$,c:$"$a$ ${os:nope|$a$}+"}',
-    '{a:"b",b:null,c:"b b+"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$a|0$,b:$b|2$}',
-    '{a:1,b:2}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$(a|b),b:$b|a$}',
-    '{a:1,b:"a"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$(a|b),b:$b|$(a)$}',
-    '{a:1,b:1}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$(a|b),b:$b|$(c|a)$}',
-    '{a:1,b:"a"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$(a|b),b:$(b|$(c|a))}',
-    '{a:1,b:"a"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$a$,b:$"$a$"}',
-    '{a:1,b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$a$,b:"$a$",c{d:$(a)}}',
-    '{a:1,b:"$a$",c:{d:1}}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$none|$a$$,b:$"$a$"}',
-    '{a:1,b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$none|"1"$,b:$"$a$"}',
-    '{a:"1",b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:$no|$ne|$a$$$,b:$"$a$"}',
-    '{a:1,b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{a:${no|${ne|${a}}},b:$"$a$"}',
-    '{a:1,b:"1"}');
-  J := '# comment'#10'$$'#10'# comment'#10'var=1'#10'a=number $var$'#10'$$'#10;
-  TestJop(
-    J + '[ 1 2 ]',
-    '[1,2]');
-  TestJop(
-    J + '[ $if a$ 1 $endif$ 2 ]',
-    '[1,2]');
-  TestJop(
-    J + '[ $if a$ 1 $if var$ 2 $endif$ $endif$ 3 ]',
-    '[1,2,3]');
-  TestJop(
-    J + '[ $if a$ 1 $if var$ 2 $else$ 3 $endif$ $else$ 4 $endif$5]',
-    '[1,2,5]');
-  TestJop(
-    J + '[ $if a$ 1 $if no$ 2 $else$ 3 $endif$ $else$ 4 $endif$ 5 ]',
-    '[1,3,5]');
-  TestJop(
-    J + '[ $if b$ 1 $if var$ 2 $else$ 3 $endif$ $else$ 4 $endif$ 5 ]',
-    '[4,5]');
-  J := '$$'#10'var=1'#10'a="number $var$" '#10'$$'#10;
-  TestJop(
-    J + '{a:$a$,b:$"$a$",c:$var$,d: $"$var$" ,e:"$var$",f:$"5432$var$0"}',
-    '{a:"number 1",b:"number 1",c:1,d:"1",e:"$var$",f:"543210"}');
-  TestJop(
-    J + '{$a$:0,b:$exe:arch$,c:$"http://toto/$exe:arch$",d:$os:none$,e:$"a$os:no$s"}',
-    '{"number 1":0,b:"' + CPU_ARCH_TEXT + '",c:"http://toto/' + CPU_ARCH_TEXT +
-     '",d:null,e:"as"}');
-  TestJop(
-    J + '# comment 2'#10'$$ section 2'#10'$ifdef a$ b=10'#10'$endif$'#10'$$'#10 +
-    '[$ifdef b$ 99 $else$ 0 $endif$ $(b) $(a) 100]',
-    '[99,10,"number 1",100]');
-  TestJop(
-    J + '$$ section 2'#10'$ifdef a$ b=1'#10'a=2'#10'$endif$'#10'$$'#10 +
-    '[$ifdef b$ $(b) $else$ 0 $endif$ $(b) $(a) 10]',
-    '[1,1,2,10]');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{ $if a$ a:$a$ $endif$, b:$"$a$"}',
-    '{a:1,b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{$if b$a:$a$$endif$b:$"$a$"}',
-    '{b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{$ifdef a$ $else$ a:$a$ $endif$, b:$"$a$"}',
-    '{b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{$ifdef a$$else$a:$a$$endif$b:$"$a$"}',
-    '{b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{ $if a = 1$ a:$a$ $endif$, b:$"$a$"}',
-    '{a:1,b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{ $if a = x$ a:$a$ $endif$, b:$"$a$"}',
-    '{b:"1"}');
-  TestJop(
-    '$$'#10'a=x'#10'$$'#10'{ $if a = x$ a:$a$ $endif$, b:$"$a$"}',
-    '{a:"x",b:"x"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{ $if a = $a$$ a:$a$ $endif$, b:$"$a$"}',
-    '{a:1,b:"1"}');
-  TestJop(
-    '$$'#10'a=xy'#10'$$'#10'{ $if a = $a$ $ a:$a$ $endif$, $a$:$"$a$"}',
-    '{a:"xy","xy":"xy"}', {nest=}false);
-  TestJop(
-    '$$'#10'a=xy'#10'$$'#10'{ $if yz > $a$ $ a:$a$ $endif$, $a$:$"$a$"}',
-    '{"xy":"xy"}', {nest=}false);
-  TestJop(
-    '$$'#10'a=xy'#10'$$'#10'{ $if a < yz $ a:$a$ $endif$, $a$:$"$a$"}',
-    '{a:"xy","xy":"xy"}', {nest=}false);
-  TestJop(
-    '$$'#10'a =1'#10'$$'#10'{ $if a <> 0 $ a:$a$ $endif$, b:$"$a$"}',
-    '{a:1,b:"1"}');
-  TestJop(
-    '$$'#10'a=10'#10'$$'#10'{ $if a > 5 $ a:$a$ $endif$, b:$"$a$"}',
-    '{a:10,b:"10"}');
-  TestJop(
-    '$$'#10'a=10'#10'five=5'#10'$$'#10'{ $if a > $five$ $ a:$a$ $endif$, b:$"$a$"}',
-    '{a:10,b:"10"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{$if a=1$a:$a$$endif$b:$"$a$"}',
-    '{a:1,b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{ $if a = 0$ a:$a$ $endif$, b:$"$a$"}',
-    '{b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'{ $if a = 10$ a:$a$ $endif$, b:$"$a$"}',
-    '{b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'b=$a$'#10'$$'#10'{ $if a = $b$$ a:$a$ $endif$, b:$"$a$"}',
-    '{a:1,b:"1"}');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'[ $ifdef a$ 1 $else$ 2 $endif$ ]', '[1]');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'[ $if a>0$ 1 $else$ 2 $endif$ ]', '[1]');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'[ $if a<10$ 1 $else$ 2 $endif$ ]', '[1]');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'[ $if a > 01 $ 1 $else$ 2 $endif$ ]', '[2]');
-  TestJop(
-    '$$'#10'a=10'#10'$$'#10'[ $if a > 9 $ 1 $else$ 2 $endif$ ]', '[1]');
-  TestJop(
-    '$$'#10'a=10'#10'$$'#10'[ $if a > 9 $ $else$ 2 $endif$ ]', '[]');
-  TestJop(
-    '[ $if cpu:threads > 0 $ 1 $else$ 2 $endif$ ]', '[1]');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'[ $ifdef a$ 1 $else$ 2 $endif$ ]', '[1]');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'[ $if a$ 1 $if no$ 2 $endif$ 4 $else$ 5 $endif$ 6 ]',
-    '[1,4,6]');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'[ $if a$ 1 $if no$ 2 $else$ 3 $endif$ 4 $else$ 5 $endif$ 6 ]',
-    '[1,3,4,6]');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'[ $if no$ 1 $if a$ 2 $else$ 3 $endif$ 4 $else$ 5 $endif$ 6 ]',
-    '[5,6]');
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'[ $if no$ 1 $if a$ 2 $else$ 3 $endif$ 4 $else$ 5 $else$ 6 $else$ 7 $endif$ 8 ]',
-    '[5,7,8]'); // $else$ is just a non-recursive toggle ;)
-  TestJop(
-    '$$'#10'a=1'#10'$$'#10'[ $if a$ 1 $if no$ 2 $endif$ 4 $else$ 5 $else$ 6 $endif$ 7 ]',
-    '[1,4,6,7]');
-  TestJop(
-    '[ $if no$ 1 $if no$ 2 $else$ 3 $endif$ 4 $else$ 5 $endif$ 6 ]',
-    '[5,6]');
   J := '{"RowID":  210 ,"Name":"Alice","Role":"User","Last Login":null, ' +
     '// comment'#13#10'"First Login" : /* to be ignored */  null  ,  "Department"' +
     ' :    "{\"relPath\":\"317\\\\\",\"revision\":1}" } ]';
@@ -6488,7 +6899,7 @@ begin
   u := VariantSaveMongoJson(o, modMongoStrict);
   CheckEqual(u, FormatUtf8('{"id":{"$oid":"%"},"name":"John","date":{"$date":"%"}}',
     [BSONID, st]));
-  Check(u3 = u);
+  CheckEqual(u3, u);
   _Json(u, o2);
   u := VariantSaveMongoJson(o2, modMongoShell);
   CheckEqual(u, FormatUtf8('{id:ObjectId("%"),name:"John",date:ISODate("%")}',
@@ -9440,14 +9851,19 @@ begin
   for i := low(ERRORS) to high(ERRORS) do
   with ERRORS[i] do
   begin
-    YamlExpectRaise(Join([' for ', Name]), Yaml);
-    if not IdemPChar(pointer(Name), 'NUL-') then
-      continue;
-    CheckNotEqual(StrLen(pointer(Yaml)), length(Yaml), Name);
-    json := SmallUInt32Utf8[i];
-    CheckUtf8(not TryYamlToJson(Yaml, json), // specific call to detect #0
-      'YamlToJson should reject %', [Name]);
-    CheckEqual(json, '');
+    TSynLog.Family.ExceptionIgnoreCurrentThread := true;
+    try
+      YamlExpectRaise(Join([' for ', Name]), Yaml);
+      if not IdemPChar(pointer(Name), 'NUL-') then
+        continue;
+      CheckNotEqual(StrLen(pointer(Yaml)), length(Yaml), Name);
+      json := SmallUInt32Utf8[i];
+      CheckUtf8(not TryYamlToJson(Yaml, json), // specific call to detect #0
+        'YamlToJson should reject %', [Name]);
+      CheckEqual(json, '');
+    finally
+      TSynLog.Family.ExceptionIgnoreCurrentThread := false;
+    end;
   end;
 end;
 
@@ -11707,6 +12123,259 @@ var
     end;
   end;
 
+  procedure CheckAesWritePolicy(const Plain: RawByteString;
+    Mode: integer);
+  var
+    s: TRawByteStringStream;
+    w: TZipWrite;
+    z: TZipRead;
+    st: TStream;
+    zip: RawByteString;
+    fn: TFileName;
+    expected: integer;
+    crc: cardinal;
+  begin
+    fn := WorkDir + 'zip-ae-test-input.bin';
+    s := TRawByteStringStream.Create;
+    try
+      w := TZipWrite.Create(s);
+      try
+        w.Password := 'mORMot';
+        case Mode of
+          0:
+            w.AddStored('data', pointer(Plain), length(Plain));
+          1:
+            begin
+              Check(FileFromString(Plain, fn));
+              w.AddStored(fn, true, 'data');
+            end;
+          2:
+            begin
+              st := w.AddDeflatedStream('data', 0, 0);
+              try
+                st.WriteBuffer(pointer(Plain)^, length(Plain));
+              finally
+                st.Free;
+              end;
+            end;
+          3:
+            w.AddDeflated('data', pointer(Plain), length(Plain));
+        end;
+      finally
+        w.Free;
+      end;
+      zip := s.DataString;
+    finally
+      s.Free;
+      if Mode = 1 then
+        DeleteFile(fn);
+    end;
+    z := TZipRead.Create(pointer(zip), length(zip));
+    try
+      CheckEqual(z.Count, 1, 'AE count');
+      Check(z.Entry[0].aes <> nil, 'AE extra');
+      if length(Plain) < 20 then
+        expected := 2
+      else
+        expected := 1;
+      CheckEqual(z.Entry[0].aes^.version, expected,
+        'AE version');
+      crc := 0;
+      if expected = 1 then
+        crc := mormot.lib.z.crc32(0, pointer(Plain), length(Plain));
+      CheckEqual(z.Entry[0].dir^.fileInfo.zcrc32, crc, 'AE CRC');
+      z.Password := 'mORMot';
+      CheckEqual(z.UnZip(0), Plain, 'AE roundtrip');
+      // Verify that the reader actually checks AE-1 CRC.
+      if expected = 1 then
+      begin
+        z.Entry[0].dir^.fileInfo.zcrc32 := z.Entry[0].dir^.fileInfo.zcrc32 xor 1;
+        Check(not z.TestAll, 'AE-1 CRC mismatch');
+      end;
+    finally
+      z.Free;
+    end;
+  end;
+
+  procedure ZipEncryption;
+  const
+    INFOZIP: array[0..151] of byte = (
+      $50, $4b, $03, $04, $0a, $00, $09, $00, $00, $00, $26, $a3, $5f, $5d,
+      $15, $3f, $91, $3f, $1c, $00, $00, $00, $10, $00, $00, $00, $05, $00,
+      $00, $00, $61, $2e, $74, $78, $74, $01, $4d, $91, $b2, $a2, $9e, $8c,
+      $23, $5d, $b5, $18, $64, $ea, $89, $3b, $ec, $c5, $f6, $b7, $c1, $78,
+      $e8, $6c, $0e, $91, $41, $b7, $5b, $50, $4b, $07, $08, $15, $3f, $91,
+      $3f, $1c, $00, $00, $00, $10, $00, $00, $00, $50, $4b, $01, $02, $1e,
+      $03, $0a, $00, $09, $00, $00, $00, $26, $a3, $5f, $5d, $15, $3f, $91,
+      $3f, $1c, $00, $00, $00, $10, $00, $00, $00, $05, $00, $00, $00, $00,
+      $00, $00, $00, $00, $00, $00, $00, $a4, $81, $00, $00, $00, $00, $61,
+      $2e, $74, $78, $74, $50, $4b, $05, $06, $00, $00, $00, $00, $01, $00,
+      $01, $00, $33, $00, $00, $00, $4f, $00, $00, $00, $00, $00);
+    // 'mORMot AES-256' encrypted by 7-Zip "7z a -tzip -mem=AES256 -mx=0
+    // -mtm=off -mtc=off -mta=off -pmormot v7.zip b.txt"
+    SEVENZIP: array[0..171] of byte = (
+      $50, $4b, $03, $04, $33, $00, $01, $00, $63, $00, $00, $00, $21, $00,
+      $00, $00, $00, $00, $2a, $00, $00, $00, $0e, $00, $00, $00, $05, $00,
+      $0b, $00, $62, $2e, $74, $78, $74, $01, $99, $07, $00, $02, $00, $41,
+      $45, $03, $00, $00, $50, $2d, $ad, $63, $1a, $e4, $1d, $ef, $61, $49,
+      $c4, $bd, $84, $36, $dc, $32, $cb, $3f, $d7, $8b, $17, $b3, $ba, $81,
+      $0a, $4c, $4e, $61, $16, $4d, $d3, $42, $b6, $ab, $c2, $d3, $fb, $18,
+      $9a, $d9, $9a, $6b, $50, $4b, $01, $02, $3f, $03, $33, $00, $01, $00,
+      $63, $00, $00, $00, $21, $00, $00, $00, $00, $00, $2a, $00, $00, $00,
+      $0e, $00, $00, $00, $05, $00, $0b, $00, $00, $00, $00, $00, $00, $00,
+      $20, $80, $a4, $81, $00, $00, $00, $00, $62, $2e, $74, $78, $74, $01,
+      $99, $07, $00, $02, $00, $41, $45, $03, $00, $00, $50, $4b, $05, $06,
+      $00, $00, $00, $00, $01, $00, $01, $00, $3e, $00, $00, $00, $58, $00,
+      $00, $00, $00, $00);
+  var
+    z: TZipRead;
+    w: TZipWrite;
+    mode: integer;
+    zip: RawByteString;
+    zipfn: TFileName;
+    S: TRawByteStringStream;
+    st: TStream;
+
+    function Raised(i: integer): boolean;
+    begin
+      result := false;
+      try
+        z.UnZip(i);
+      except
+        on ESynZip do
+          result := true;
+      end;
+    end;
+
+    procedure Vector(p: pointer; len: integer; const expected: RawUtf8);
+    begin
+      z := TZipRead.Create(p, len);
+      try
+        CheckEqual(z.Count, 1, 'vector count');
+        z.Password := 'mormot';
+        CheckEqual(z.UnZip(0), expected, 'vector');
+      finally
+        z.Free;
+      end;
+    end;
+
+    procedure CheckRead(reader: TZipRead; enc: TZipEncryption);
+    begin
+      z := reader;
+      try
+        CheckEqual(z.Count, 5, 'crypt count');
+        Check(z.Entry[0].dir^.fileInfo.flags and 1 <> 0, 'encrypted');
+        Check((z.Entry[0].aes <> nil) = (enc = zeAes256), 'aes');
+        Check(z.Entry[4].dir^.fileInfo.flags and 1 = 0, 'plain');
+        Check(Raised(0), 'no password');
+        z.Password := 'mormot';
+        Check(Raised(1), 'wrong password');
+        Check(not Raised(4), 'plain with password');
+        z.Password := 'mORMot';
+        Check(z.TestAll, 'crypt testall');
+        CheckEqual(z.UnZip('crypt\deflated'), Data, 'crypt1');
+        CheckEqual(z.UnZip('crypt\stored'), Data, 'crypt2');
+        CheckEqual(z.UnZip('crypt\file'), Data, 'crypt3');
+        CheckEqual(z.UnZip('crypt\filestored'), Data, 'crypt4');
+        CheckEqual(z.UnZip('plain'), Data, 'crypt5');
+      finally
+        z.Free;
+      end;
+    end;
+
+    procedure RoundTrip(enc: TZipEncryption);
+    begin
+      S := TRawByteStringStream.Create;
+      try
+        w := TZipWrite.Create(S);
+        try
+          w.Password := 'mORMot';
+          w.Encryption := enc;
+          w.AddDeflated('crypt\deflated', pointer(Data), length(Data));
+          w.AddStored('crypt\stored', pointer(Data), length(Data));
+          w.AddDeflated(DataFile, true, Z_USUAL_COMPRESSION, 'crypt\file');
+          w.AddStored(DataFile, true, 'crypt\filestored');
+          w.Password := '';
+          w.AddDeflated('plain', pointer(Data), length(Data));
+        finally
+          w.Free;
+        end;
+        zip := S.DataString;
+      finally
+        S.Free;
+      end;
+      FileFromString(zip, zipfn);
+      CheckRead(TZipRead.Create(pointer(zip), length(zip)), enc);
+      CheckRead(TZipRead.Create(zipfn), enc);
+      CheckRead(TZipRead.Create(zipfn, 0, 0, 1024), enc); // force fSource
+      // detect tampered content (via crc32 or HMAC-SHA1)
+      zip[length(zip) shr 2] := AnsiChar(ord(zip[length(zip) shr 2]) xor 1);
+      z := TZipRead.Create(pointer(zip), length(zip));
+      try
+        z.Password := 'mORMot';
+        Check(not z.TestAll, 'tampered');
+      finally
+        z.Free;
+      end;
+    end;
+
+  begin
+    CheckEqual(SizeOf(TFileInfoExtraAes), 11, 'AES extra size');
+    Vector(@INFOZIP, SizeOf(INFOZIP), 'mORMot ZipCrypto');
+    Vector(@SEVENZIP, SizeOf(SEVENZIP), 'mORMot AES-256');
+    zipfn := WorkDir + 'zipcrypt.zip';
+    TSynLog.Family.ExceptionIgnoreCurrentThread := true;
+    try
+      S := TRawByteStringStream.Create;
+      try
+        w := TZipWrite.Create(S);
+        try
+          Check(w.Encryption = zeAes256, 'default encryption');
+          w.Password := 'mORMot';
+          // AES-CTR encrypts on the fly: AddDeflatedStream is supported
+          st := w.AddDeflatedStream('crypt\stream');
+          st.WriteBuffer(pointer(Data)^, length(Data));
+          st.Free;
+          // ZipCrypto needs the crc32 ahead of time: AddDeflatedStream fails
+          w.Encryption := zeZipCrypto; // available with mormot.crypt.zip
+          Check(w.Encryption = zeZipCrypto, 'set encryption');
+          try
+            w.AddDeflatedStream('crypt\stream2').Free;
+            Check(false, 'zipcrypto stream');
+          except
+            on ESynZip do
+              CheckEqual(w.Count, 1, 'zipcrypto stream count');
+          end;
+        finally
+          w.Free;
+        end;
+        zip := S.DataString;
+      finally
+        S.Free;
+      end;
+      z := TZipRead.Create(pointer(zip), length(zip));
+      try
+        CheckEqual(z.Count, 1, 'stream count');
+        z.Password := 'mORMot';
+        Check(z.TestAll, 'stream testall');
+        CheckEqual(z.UnZip(0), Data, 'stream');
+      finally
+        z.Free;
+      end;
+      RoundTrip(zeAes256);
+      RoundTrip(zeZipCrypto);
+    finally
+      TSynLog.Family.ExceptionIgnoreCurrentThread := false;
+    end;
+    Check(DeleteFile(zipfn));
+    for mode := 0 to 3 do
+    begin
+      CheckAesWritePolicy(RawUtf8OfChar('x', 19), mode);
+      CheckAesWritePolicy(RawUtf8OfChar('x', 20), mode);
+      CheckAesWritePolicy(RawUtf8OfChar('x', 300), mode);
+    end;
+  end;
+
 var
   i, m: integer;
   mem: QWord;
@@ -11762,6 +12431,7 @@ begin
     S.Free;
   end;
   StreamLevel0;
+  ZipEncryption;
   // onprog := TStreamRedirect.ProgressInfoToConsole;
   onprog := TSynLog.ProgressInfo;
   for m := 1 to 2 do

@@ -27,7 +27,7 @@ uses
   mormot.lib.openssl11, mormot.lib.quickjs, mormot.lib.sspi, 
   mormot.lib.static, mormot.lib.winhttp, mormot.lib.z, mormot.net.async, 
   mormot.net.client, mormot.net.http, mormot.net.relay, mormot.net.rtsphttp, 
-  mormot.net.server, mormot.net.server.win, mormot.net.peercache, mormot.net.sock, mormot.net.tunnel, mormot.net.ws.client, 
+  mormot.net.server, mormot.net.server.win, mormot.net.peercache, mormot.net.proxy, mormot.net.sock, mormot.net.tunnel, mormot.net.ws.client, 
   mormot.net.ws.core, mormot.net.ws.server, mormot.orm.base, 
   mormot.orm.client, mormot.orm.core, mormot.orm.mongodb, mormot.orm.rest, 
   mormot.orm.server, mormot.orm.sql, mormot.orm.sqlite3, mormot.orm.storage, 
@@ -44,7 +44,8 @@ uses
   mormot.net.openapi, mormot.core.os.security, mormot.tools.mget, 
   mormot.core.mvc, mormot.crypt.other, mormot.net.dhcp, mormot.core.fmt, 
   mormot.core.os.delphi, mormot.core.i18n, mormot.lib.uniscribe, 
-  mormot.crypt.win, mormot.db.raw.duckdb, mormot.db.sql.duckdb;
+  mormot.crypt.win, mormot.db.raw.duckdb, mormot.db.sql.duckdb, 
+  mormot.crypt.zip;
 
 implementation
 
