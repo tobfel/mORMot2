@@ -6,8 +6,11 @@ asked in [that PR](https://github.com/synopse/mORMot2/pull/785#issuecomment-6955
 stability, performance and CPU/RAM usage compared to nginx. The benchmark uses **PHP 8.5.12** with
 php-fpm and FrankenPHP, a synthetic PHP workload, and a real Laravel 12 application.
 
-The fix proposed from these measurements is PR_LINK
-(commit [`b86a573`](https://github.com/tobfel/mORMot2/commit/b86a573)).
+The fix proposed from these measurements is commit
+[`b86a573`](https://github.com/tobfel/mORMot2/commit/b86a573) "net: release FastCGI connection
+buffers on close", on branch
+[`ccr-698097fd-544c0t`](https://github.com/tobfel/mORMot2/tree/ccr-698097fd-544c0t), submitted to
+[synopse/mORMot2 as a pull request](https://github.com/synopse/mORMot2/pulls?q=is%3Apr+%22release+FastCGI+connection+buffers%22).
 
 ## Summary
 
