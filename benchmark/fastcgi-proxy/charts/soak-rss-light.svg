@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="340" viewBox="0 0 760 340" role="img" aria-labelledby="t d"><title id="t">Memory during a 3 minute mixed load</title><desc id="d">c=200, 50 % hello, 25 % json, 10 % 100 KB, 10 % POST 64 KB, 5 % sleep; 0 errors</desc>
+<rect width="760" height="340" rx="8" fill="#fcfcfb"/>
+<text x="20.0" y="30.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="16" font-weight="600" fill="#0b0b0b" text-anchor="start">Memory during a 3 minute mixed load</text>
+<text x="20.0" y="50.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">c=200, 50 % hello, 25 % json, 10 % 100 KB, 10 % POST 64 KB, 5 % sleep; 0 errors</text>
+<rect x="20" y="65" width="10" height="10" rx="2" fill="#eb6834"/>
+<text x="35.0" y="74.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">mORMot</text>
+<rect x="96.2" y="65" width="10" height="10" rx="2" fill="#1baf7a"/>
+<text x="111.2" y="74.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">mORMot + fix</text>
+<line x1="64.0" y1="292.0" x2="640.0" y2="292.0" stroke="#c3c2b7" stroke-width="1"/>
+<text x="56.0" y="296.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">0</text>
+<line x1="64.0" y1="242.0" x2="640.0" y2="242.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56.0" y="246.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">400</text>
+<line x1="64.0" y1="192.0" x2="640.0" y2="192.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56.0" y="196.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">800</text>
+<line x1="64.0" y1="142.0" x2="640.0" y2="142.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56.0" y="146.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">1,200</text>
+<line x1="64.0" y1="92.0" x2="640.0" y2="92.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56.0" y="96.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">1,600</text>
+<text x="64.0" y="310.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">0 s</text>
+<text x="142.5" y="310.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">30 s</text>
+<text x="221.1" y="310.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">60 s</text>
+<text x="299.6" y="310.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">90 s</text>
+<text x="378.2" y="310.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">120 s</text>
+<text x="456.7" y="310.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">150 s</text>
+<text x="535.3" y="310.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">180 s</text>
+<text x="613.8" y="310.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">210 s</text>
+<text x="640.0" y="332.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">RSS in MB over time</text>
+<line x1="535.3" y1="88.0" x2="535.3" y2="292.0" stroke="#c3c2b7" stroke-width="1"/>
+<text x="541.3" y="262.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#52514e" text-anchor="start">load stops</text>
+<polyline points="64.0,290.9 90.2,186.0 116.4,148.1 142.5,131.5 168.7,120.8 194.9,117.2 221.1,116.5 247.3,113.6 273.5,113.0 299.6,112.6 325.8,112.5 352.0,112.4 378.2,112.4 404.4,111.9 430.5,111.6 456.7,111.5 482.9,111.4 509.1,111.2 535.3,111.2 561.5,290.2 587.6,290.2 613.8,290.2 640.0,290.2" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="509.1" cy="111.2" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<text x="299.6" y="101.2" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#0b0b0b" text-anchor="middle">mORMot: peak 1,446 MB</text>
+<polyline points="64.0,291.0 90.2,288.6 116.4,288.6 142.5,288.6 168.7,288.6 194.9,288.6 221.1,288.6 247.3,288.6 273.5,288.6 299.6,288.6 325.8,288.6 352.0,288.6 378.2,288.6 404.4,288.6 430.5,288.6 456.7,288.6 482.9,288.5 509.1,288.5 535.3,288.5 561.5,290.2 587.6,290.2 613.8,290.2 640.0,290.2" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="482.9" cy="288.5" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<text x="299.6" y="278.5" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#0b0b0b" text-anchor="middle">mORMot + fix: peak 28 MB</text>
+</svg>
