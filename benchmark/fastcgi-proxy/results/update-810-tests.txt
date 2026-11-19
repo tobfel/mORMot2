@@ -1,0 +1,9 @@
+# TNetworkProtocols on synopse/mORMot2 master 9d39b36 + PR #810 (29820f9), FPC 3.2.2 x86_64-linux, -dFPC_X64MM -dFPCMM_SERVER, 2026-11-19
+706613 lines compiled, 27.0 sec
+run1 rc=0   Total failed: 0 / 177,441 - Network protocols PASSED  6.94s
+run2 rc=0   Total failed: 0 / 177,441 - Network protocols PASSED  6.02s
+run3 rc=0   Total failed: 0 / 177,441 - Network protocols PASSED  7.69s
+  - Slow tests:
+      HttpProxyServer 92.29ms HttpFastCgi 2.13s HttpBodyDownload 314.30ms
+      HttpExpect100 13.96ms HttpFileRange 39.39ms HttpOutStream 189.09ms
+      TFTPServer 218.14ms WSBroadcast 20.18ms HttpAsyncShutdown 136.67ms

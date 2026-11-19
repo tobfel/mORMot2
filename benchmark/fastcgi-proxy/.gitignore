@@ -1,0 +1,2 @@
+# raw results are part of this benchmark (the root .gitignore excludes *.txt)
+!results/*.txt

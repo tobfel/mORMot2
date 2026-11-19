@@ -1,0 +1,8 @@
+ACmm hello.php               c=64    rps=22247.69  avg=2.89ms   p50=2.79ms   p99=6.15ms   non2xx=0      proxyCPU= 97.6% ( 43.8 us/req) phpCPU= 97.2% RSS=6MB->11MB HWM=11MB sockerr=[none]
+ACmm json.php                c=64    rps=15341.47  avg=4.19ms   p50=4.05ms   p99=7.25ms   non2xx=0      proxyCPU= 93.2% ( 60.6 us/req) phpCPU=167.3% RSS=11MB->12MB HWM=12MB sockerr=[none]
+ACmm big.php?kb=100          c=64    rps=6232.39   avg=10.24ms  p50=9.65ms   p99=18.40ms  non2xx=0      proxyCPU= 98.6% (157.5 us/req) phpCPU= 64.0% RSS=12MB->12MB HWM=12MB sockerr=[none]
+ACmm big.php?kb=1024         c=16    rps=337.87    avg=47.19ms  p50=46.63ms  p99=68.65ms  non2xx=0      proxyCPU= 99.3% (2934.4 us/req) phpCPU= 25.3% RSS=12MB->22MB HWM=36MB sockerr=[none]
+AC hello.php                 c=64    rps=21353.66  avg=3.04ms   p50=2.89ms   p99=7.18ms   non2xx=0      proxyCPU= 97.6% ( 45.5 us/req) phpCPU= 98.4% RSS=9MB->14MB HWM=14MB sockerr=[none]
+AC json.php                  c=64    rps=16601.82  avg=3.87ms   p50=3.63ms   p99=7.70ms   non2xx=0      proxyCPU= 92.3% ( 55.5 us/req) phpCPU=174.5% RSS=14MB->13MB HWM=14MB sockerr=[none]
+AC big.php?kb=100            c=64    rps=6844.46   avg=9.34ms   p50=8.89ms   p99=15.83ms  non2xx=0      proxyCPU= 98.3% (143.3 us/req) phpCPU= 62.3% RSS=13MB->12MB HWM=14MB sockerr=[none]
+AC big.php?kb=1024           c=16    rps=241.24    avg=66.14ms  p50=64.55ms  p99=87.88ms  non2xx=0      proxyCPU= 98.8% (4092.8 us/req) phpCPU= 17.2% RSS=12MB->27MB HWM=38MB sockerr=[none]

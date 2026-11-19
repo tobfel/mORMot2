@@ -6,13 +6,102 @@ asked in [that PR](https://github.com/synopse/mORMot2/pull/785#issuecomment-6955
 stability, performance and CPU/RAM usage compared to nginx. The benchmark uses **PHP 8.5.12** with
 php-fpm and FrankenPHP, a synthetic PHP workload, and a real Laravel 12 application.
 
-The fix proposed from these measurements is commit
-[`b86a573`](https://github.com/tobfel/mORMot2/commit/b86a573) "net: release FastCGI connection
-buffers on close", on branch
-[`ccr-698097fd-544c0t`](https://github.com/tobfel/mORMot2/tree/ccr-698097fd-544c0t), submitted to
-[synopse/mORMot2 as a pull request](https://github.com/synopse/mORMot2/pulls?q=is%3Apr+%22release+FastCGI+connection+buffers%22).
+The fix proposed from these measurements,
+[`b86a573`](https://github.com/synopse/mORMot2/commit/b86a573) "net: release FastCGI connection
+buffers on close", is merged in synopse/mORMot2 master. It was followed by further optimizations
+from Arnaud Bouchez, e.g. `df127cf` "much faster TFastCgiAsyncConnections local connections".
+The front-controller gap found here is addressed by
+[synopse/mORMot2#810](https://github.com/synopse/mORMot2/pull/810) (`FastCgiIndex`), measured in
+the update below.
 
-## Summary
+## Update 2026-11-19: front controller (PR #810) with Laravel 12
+
+Tested source: synopse/mORMot2 master [`9d39b36`](https://github.com/synopse/mORMot2/commit/9d39b36)
+with PR #810 merged on top ([`29820f9`](https://github.com/synopse/mORMot2/commit/29820f9), a
+fast-forward), built with FPC 3.2.2 and `-dFPC_X64MM -dFPCMM_SERVER`. The proxy runs with
+`THttpProxyUrlSettings.FastCgiIndex = 'index.php'`, so every stack now uses the same pretty URLs
+(`/page`, `/api/items`, `/`). Same machine, same PHP 8.5.12, same Laravel 12.73 app and settings
+as below. The figures were measured in a new run, so compare them only within this section.
+
+**Summary**
+- **Same answers as nginx `try_files`:** on 24 checks, the mORMot front controller returned the
+  same status codes and the same bodies as nginx. The checks covered the app routes, query
+  strings, `/index.php` and `/index.php/page`, Laravel 404 pages, `robots.txt` and
+  `favicon.ico` from `public/`, HEAD, 405 on POST to a static file, 304 with
+  `If-Modified-Since`/`If-None-Match`, ranges and path traversal. The only exceptions were `/up`
+  (it prints a timing) and traversal (nginx 400, mORMot and FrankenPHP 404). Laravel no longer
+  generates links with `/index.php`.
+- **Laravel throughput is the same as nginx** (within ±1.5 %), with the same p99 latency.
+- **The whole stack uses less memory than nginx:** under load the mORMot front stays at 7-8 MB
+  RSS, against 26 MB for nginx (3 workers). With php-fpm, that is 64-65 MB PSS against 74-75 MB.
+- **FrankenPHP:** in classic mode it is 8-14 % slower than php-fpm behind nginx or mORMot. In
+  worker mode (Octane) it is 1.34-1.67x faster, but needs 1.75-2x the memory (130 MB PSS).
+- **Static files from `public/`:** 159 k req/s for mORMot, against 112 k for a default nginx and
+  about 40 k for FrankenPHP. mORMot serves small files from its memory cache; nginx's default
+  configuration opens and sends the file on each request. nginx used less CPU per request
+  (11-12 us against 13-14 us), so this compares default configurations, not raw efficiency.
+- **Stability:** a 2 min mixed soak (85 % Laravel routes, 15 % static file, c=100) completed
+  105,254 requests with 0 errors. RSS stayed at 8 MB, about 210 fds were open, and 9 threads ran.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/laravel-810-throughput-dark.svg">
+  <img alt="Laravel with the front controller: requests per second" src="charts/laravel-810-throughput-light.svg">
+</picture>
+
+Requests per second, median of 3 interleaved runs at c=32 (p99 latency in brackets):
+
+| Endpoint | nginx + php-fpm | mORMot master + #810 + php-fpm | FrankenPHP classic | FrankenPHP worker |
+|---|---:|---:|---:|---:|
+| JSON API | 826 (53 ms) | 832 (55 ms) | 709 (82 ms) | 1,137 (56 ms) |
+| Blade page | 658 (67 ms) | 668 (67 ms) | 575 (92 ms) | 879 (70 ms) |
+| Welcome page | 878 (55 ms) | 877 (53 ms) | 812 (74 ms) | 1,470 (43 ms) |
+
+At c=256 (one run each), in req/s:
+
+| Endpoint | nginx | mORMot | FrankenPHP classic | FrankenPHP worker |
+|---|---:|---:|---:|---:|
+| JSON API | 788 | 815 | 681 | 1,154 |
+| Blade page | 612 | 648 | 582 | 930 |
+| Welcome page | 883 | 849 | 784 | 1,601 |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/laravel-810-memory-dark.svg">
+  <img alt="Laravel memory of the whole stack" src="charts/laravel-810-memory-light.svg">
+</picture>
+
+Under load (c=256):
+
+| | front RSS | stack PSS | front fds | threads | stack CPU per JSON request |
+|---|---:|---:|---:|---:|---:|
+| nginx (3 workers) + php-fpm | 26-27 MB | 74-75 MB | 561 | 4 processes | 3.8 ms |
+| mORMot master + #810 + php-fpm | 7-8 MB | 64-65 MB | 523 | 9 | 3.7 ms |
+| FrankenPHP classic | 151 MB | 119-120 MB | 276 | 22 | 4.3 ms |
+| FrankenPHP worker | 161-163 MB | 130-131 MB | 277 | 45 | 2.5 ms |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/laravel-810-static-dark.svg">
+  <img alt="Static files from public" src="charts/laravel-810-static-light.svg">
+</picture>
+
+| Static file, c=64 | nginx | mORMot master + #810 | FrankenPHP classic | FrankenPHP worker |
+|---|---:|---:|---:|---:|
+| `robots.txt` (24 B) | 111,630 req/s, 12 us/req | 158,810 req/s, 14 us/req | 39,449 req/s | 41,211 req/s |
+| `favicon.ico` (0 B) | 117,121 req/s, 11 us/req | 158,398 req/s, 13 us/req | 38,377 req/s | 40,525 req/s |
+
+wrk ran with a single thread, and nginx was not CPU-bound in this test (131 % of 3 cores), so the
+static figures are a lower bound for nginx.
+
+The `TNetworkProtocols` regression tests pass on master + #810 (see
+[results/update-810-tests.txt](results/update-810-tests.txt)). Raw data:
+[update-810-repeat-3x.txt](results/update-810-repeat-3x.txt),
+[update-810-matrix.txt](results/update-810-matrix.txt),
+[update-810-static.txt](results/update-810-static.txt),
+[update-810-soak.txt](results/update-810-soak.txt) (RSS MB, fds, threads every 10 s),
+[update-810-soak-wrk.txt](results/update-810-soak-wrk.txt),
+[update-810-compat.txt](results/update-810-compat.txt).
+To reproduce it, see [Reproduce](#reproduce) and `laravel/run-matrix.sh`.
+
+## Summary (2026-11-17, before PR #810)
 
 - **The mORMot asynchronous HTTP server keeps up with nginx.** On one core, for small PHP
   responses, the proxy matched nginx (97-110 % of its requests/s) with comparable CPU per request.
@@ -33,6 +122,7 @@ buffers on close", on branch
   but needs 1.7-1.8x the memory of the php-fpm stacks.
 - **Gaps for PHP frameworks:** there is no front-controller fallback (`/page` returns 404, only
   `/index.php/page` works), and static files under the FastCGI root are sent to php-fpm.
+  Both are addressed by PR #810; see the update above.
 
 All mORMot binaries were built with `FPC_X64MM` (`-dFPC_X64MM -dFPCMM_SERVER`), the
 recommended memory manager for servers. The default FPC heap was clearly slower: 10 KB responses
@@ -247,6 +337,12 @@ synthetic/start.sh upstream              # mORMot on :8080, nginx on :8081
 synthetic/bench.sh "mORMot 100KB" "$(pgrep -f 'fcgiproxy_upstream 8080')" "http://127.0.0.1:8080/big.php?kb=100" 64 15
 synthetic/bench.sh "nginx 100KB" "$(pgrep -f 'nginx: worker')" "http://127.0.0.1:8081/big.php?kb=100" 64 15
 synthetic/stop.sh
+
+# update 2026-11-19: synopse/mORMot2 master + PR #810, front controller with FCGI_INDEX=index.php
+git fetch https://github.com/synopse/mORMot2 pull/810/head:pr810 && git worktree add ../mormot-pr810 pr810
+cp -r ../../static/x86_64-linux ../mormot-pr810/static/   # static libraries, paths relative to the repo root
+MORMOT_ROOT=../mormot-pr810 proxy/build.sh pr810          # adds -dHASFASTCGIINDEX automatically
+laravel/start.sh && laravel/run-matrix.sh update-810   # nginx :8081, mORMot :8091, FrankenPHP :8086/:8087
 
 # Laravel: 5 stacks on CPU 0-2 (nginx :8081, mORMot :8090, mORMot + fix :8095,
 # FrankenPHP classic :8086, FrankenPHP worker :8087)

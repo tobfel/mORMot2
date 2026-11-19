@@ -1,12 +1,13 @@
 #!/bin/bash
 # usage: bench.sh <stack> <path> <conc> <secs>
-# stack: nginx | mormot | mormotfix | fclassic | fworker
+# stack: nginx | mormot | mormotfix | mormot810 | fclassic | fworker
 stack=$1; path=$2; conc=$3; secs=$4
 fpm=$(pgrep -f "php-fpm: (master|pool).*" | xargs)
 case $stack in
   nginx)     port=8081; front=$(pgrep -f "nginx: .*laravel/nginx.conf|nginx: worker" | xargs); php=$fpm;;
   mormot)    port=8090; front=$(pgrep -f "fcgiproxy_upstream 8090"); php=$fpm;;
   mormotfix) port=8095; front=$(pgrep -f "fcgiproxy_fix 8095"); php=$fpm;;
+  mormot810) port=8091; front=$(pgrep -f "fcgiproxy_pr810 8091"); php=$fpm;;
   fclassic)  port=8086; front=$(pgrep -f "Caddyfile.classic"); php="";;
   fworker)   port=8087; front=$(pgrep -f "Caddyfile.worker"); php="";;
 esac

@@ -1,0 +1,4 @@
+mORMot+x64mm hello.php       c=64    rps=22553.95  avg=2.92ms   p50=2.70ms   p99=9.05ms   non2xx=0      proxyCPU= 97.2% ( 43.0 us/req) phpCPU=105.8% RSS=5MB->41MB HWM=41MB sockerr=[none]
+mORMot+x64mm json.php        c=64    rps=15220.31  avg=4.21ms   p50=3.89ms   p99=8.18ms   non2xx=0      proxyCPU= 94.6% ( 62.0 us/req) phpCPU=161.4% RSS=41MB->188MB HWM=193MB sockerr=[none]
+mORMot+x64mm big.php?kb=100  c=64    rps=5418.67   avg=11.85ms  p50=11.04ms  p99=26.55ms  non2xx=0      proxyCPU= 98.5% (180.9 us/req) phpCPU= 57.6% RSS=188MB->725MB HWM=801MB sockerr=[none]
+mORMot+x64mm big.php?kb=1024 c=16    rps=366.32    avg=43.59ms  p50=42.78ms  p99=70.24ms  non2xx=0      proxyCPU= 99.4% (2709.2 us/req) phpCPU= 26.9% RSS=725MB->253MB HWM=909MB sockerr=[none]

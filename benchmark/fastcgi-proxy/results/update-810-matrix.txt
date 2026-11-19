@@ -1,0 +1,12 @@
+nginx     /api/items           c=256  rps=787.61   p50=317.95ms p99=374.24ms err=0/- | CPU stack=301% front= 16% 3801us/req | stack RSS=439MB PSS=74MB fds=663 thr=17 | front RSS=26MB HWM=26MB fds=561 thr=4
+mormot810 /api/items           c=256  rps=814.58   p50=309.95ms p99=351.87ms err=0/- | CPU stack=303% front= 15% 3706us/req | stack RSS=420MB PSS=64MB fds=628 thr=22 | front RSS=7MB HWM=7MB fds=524 thr=9
+fclassic  /api/items           c=256  rps=681.31   p50=370.74ms p99=490.79ms err=0/- | CPU stack=293% front=293% 4274us/req | stack RSS=151MB PSS=120MB fds=277 thr=22 | front RSS=151MB HWM=157MB fds=276 thr=22
+fworker   /api/items           c=256  rps=1154.42  p50=210.08ms p99=360.52ms err=0/- | CPU stack=289% front=289% 2495us/req | stack RSS=161MB PSS=130MB fds=277 thr=45 | front RSS=161MB HWM=176MB fds=277 thr=45
+nginx     /page                c=256  rps=612.37   p50=414.90ms p99=492.86ms err=0/- | CPU stack=301% front= 14% 4892us/req | stack RSS=439MB PSS=74MB fds=666 thr=17 | front RSS=26MB HWM=26MB fds=561 thr=4
+mormot810 /page                c=256  rps=648.45   p50=391.44ms p99=454.57ms err=0/- | CPU stack=302% front= 13% 4624us/req | stack RSS=420MB PSS=64MB fds=628 thr=22 | front RSS=7MB HWM=7MB fds=523 thr=9
+fclassic  /page                c=256  rps=582.04   p50=435.99ms p99=500.03ms err=0/- | CPU stack=295% front=295% 5042us/req | stack RSS=151MB PSS=119MB fds=273 thr=22 | front RSS=151MB HWM=157MB fds=276 thr=22
+fworker   /page                c=256  rps=929.96   p50=271.92ms p99=337.85ms err=0/- | CPU stack=293% front=293% 3144us/req | stack RSS=161MB PSS=130MB fds=277 thr=45 | front RSS=161MB HWM=176MB fds=277 thr=45
+nginx     /                    c=256  rps=882.99   p50=287.07ms p99=333.62ms err=0/- | CPU stack=302% front= 25% 3402us/req | stack RSS=439MB PSS=75MB fds=661 thr=17 | front RSS=27MB HWM=26MB fds=561 thr=4
+mormot810 /                    c=256  rps=849.37   p50=299.01ms p99=340.85ms err=0/- | CPU stack=300% front= 21% 3519us/req | stack RSS=420MB PSS=65MB fds=629 thr=22 | front RSS=8MB HWM=8MB fds=523 thr=9
+fclassic  /                    c=256  rps=783.76   p50=321.07ms p99=403.22ms err=0/- | CPU stack=291% front=291% 3700us/req | stack RSS=151MB PSS=120MB fds=276 thr=22 | front RSS=151MB HWM=157MB fds=275 thr=22
+fworker   /                    c=256  rps=1601.01  p50=157.59ms p99=202.23ms err=0/- | CPU stack=282% front=282% 1750us/req | stack RSS=163MB PSS=131MB fds=277 thr=45 | front RSS=163MB HWM=176MB fds=277 thr=45

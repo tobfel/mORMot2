@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="276" viewBox="0 0 760 276" role="img" aria-labelledby="t d"><title id="t">Laravel: memory of the whole stack under load (PSS)</title><desc id="d">front server + PHP workers, welcome page at c=256; PSS shares opcache memory fairly</desc>
+<rect width="760" height="276" rx="8" fill="#fcfcfb"/>
+<text x="20.0" y="30.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="16" font-weight="600" fill="#0b0b0b" text-anchor="start">Laravel: memory of the whole stack under load (PSS)</text>
+<text x="20.0" y="50.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">front server + PHP workers, welcome page at c=256; PSS shares opcache memory fairly</text>
+<line x1="190.0" y1="86.0" x2="190.0" y2="208.0" stroke="#c3c2b7" stroke-width="1"/>
+<text x="190.0" y="224.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">0</text>
+<line x1="273.3" y1="86.0" x2="273.3" y2="208.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="273.3" y="224.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">25</text>
+<line x1="356.7" y1="86.0" x2="356.7" y2="208.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="356.7" y="224.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">50</text>
+<line x1="440.0" y1="86.0" x2="440.0" y2="208.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="440.0" y="224.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">75</text>
+<line x1="523.3" y1="86.0" x2="523.3" y2="208.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="523.3" y="224.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">100</text>
+<line x1="606.7" y1="86.0" x2="606.7" y2="208.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="606.7" y="224.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">125</text>
+<line x1="690.0" y1="86.0" x2="690.0" y2="208.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="690.0" y="224.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">150</text>
+<text x="690.0" y="242.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">MB</text>
+<text x="180.0" y="103.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="end">nginx + php-fpm</text>
+<path d="M190.0,92.0 H436.0 Q440.0,92.0 440.0,96.0 V102.0 Q440.0,106.0 436.0,106.0 H190.0 Z" fill="#2a78d6"/>
+<text x="446.0" y="103.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#0b0b0b" text-anchor="start">75 MB</text>
+<text x="180.0" y="135.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="end">mORMot + php-fpm</text>
+<path d="M190.0,124.0 H402.7 Q406.7,124.0 406.7,128.0 V134.0 Q406.7,138.0 402.7,138.0 H190.0 Z" fill="#1baf7a"/>
+<text x="412.7" y="135.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#0b0b0b" text-anchor="start">65 MB</text>
+<text x="180.0" y="167.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="end">FrankenPHP classic</text>
+<path d="M190.0,156.0 H586.0 Q590.0,156.0 590.0,160.0 V166.0 Q590.0,170.0 586.0,170.0 H190.0 Z" fill="#eda100"/>
+<text x="596.0" y="167.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#0b0b0b" text-anchor="start">120 MB</text>
+<text x="180.0" y="199.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="end">FrankenPHP worker</text>
+<path d="M190.0,188.0 H622.7 Q626.7,188.0 626.7,192.0 V198.0 Q626.7,202.0 622.7,202.0 H190.0 Z" fill="#e87ba4"/>
+<text x="632.7" y="199.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#0b0b0b" text-anchor="start">131 MB</text>
+</svg>

@@ -19,7 +19,7 @@ THEMES = {
                  s=['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181']),
 }
 # entity -> categorical slot, identical in every chart
-SLOT = {'nginx': 0, 'mORMot': 1, 'mORMot + fix': 2,
+SLOT = {'nginx': 0, 'mORMot': 1, 'mORMot + fix': 2, 'mORMot master + #810': 2,
         'FrankenPHP classic': 3, 'FrankenPHP worker': 4}
 FONT = 'system-ui, -apple-system, Segoe UI, sans-serif'
 
@@ -123,6 +123,7 @@ def grouped_columns(th, mode, name, title, subtitle, groups, series, values, vma
 
 
 def hbars(th, mode, name, title, subtitle, groups, series, values, vmax, step, unit, desc='',
+          vfmt=lambda v: f'{v:,} MB',
           entities=None):
     W = 760
     L, R, T = 190, 70, 92
@@ -149,7 +150,7 @@ def hbars(th, mode, name, title, subtitle, groups, series, values, vmax, step, u
             yy = gy + si * (bh + gap)
             ent = entities[gi] if entities else sn
             s.hbar(x(0), yy, x(v), bh, th['s'][SLOT[ent]])
-            s.text(x(v) + 6, yy + bh - 3, f'{v:,} MB', 11, th['ink'])
+            s.text(x(v) + 6, yy + bh - 3, vfmt(v), 11, th['ink'])
     s.save(f'{name}-{mode}.svg', title, desc or subtitle)
 
 
@@ -240,5 +241,33 @@ for mode, th in THEMES.items():
         ['nginx'],
         {'nginx': [74, 157, 64, 118, 136]}, 200, 50, 'MB',
         entities=['nginx', 'mORMot', 'mORMot + fix', 'FrankenPHP classic', 'FrankenPHP worker'])
+
+# update 2026-11-19: upstream master 9d39b36 + PR #810 (FastCgiIndex front controller)
+STACKS810 = ['nginx', 'mORMot master + #810', 'FrankenPHP classic', 'FrankenPHP worker']
+RUNS810 = {
+    'nginx': [(821.56, 826.11, 843.28), (641.38, 658.39, 699.21), (871.74, 877.86, 889.35)],
+    'mORMot master + #810': [(787.88, 832.26, 862.00), (653.84, 667.68, 687.43), (860.66, 876.57, 905.53)],
+    'FrankenPHP classic': [(684.99, 708.91, 748.70), (573.89, 574.58, 585.24), (794.78, 811.74, 816.92)],
+    'FrankenPHP worker': [(1098.86, 1137.07, 1218.24), (878.79, 879.16, 926.98), (1429.78, 1469.75, 1488.38)],
+}
+for mode, th in THEMES.items():
+    grouped_columns(
+        th, mode, 'laravel-810-throughput',
+        'Laravel 12 with the front controller (PR #810): requests per second',
+        'pretty URLs on every stack; 3 cores, 12 PHP workers, c=32; median of 3 runs, whisker = min-max',
+        ['JSON API (13.7 KB)', 'Blade page (14.5 KB)', 'Welcome page (80 KB)'], STACKS810,
+        {k: [r[1] for r in v] for k, v in RUNS810.items()}, 1600, 200, lambda v: f'{v:,}',
+        ranges={k: [(r[0], r[2]) for r in v] for k, v in RUNS810.items()})
+    hbars(
+        th, mode, 'laravel-810-static', 'Static files from public/ (robots.txt, 24 B)',
+        'served by the front server itself, c=64, single wrk thread; nginx default config (no open_file_cache)',
+        ['nginx', 'mORMot master + #810', 'FrankenPHP classic', 'FrankenPHP worker'], ['nginx'],
+        {'nginx': [111630, 158810, 39449, 41211]}, 180000, 30000, 'req/s',
+        vfmt=lambda v: f'{v:,} req/s', entities=STACKS810)
+    hbars(
+        th, mode, 'laravel-810-memory', 'Laravel: memory of the whole stack under load (PSS)',
+        'front server + PHP workers, welcome page at c=256; PSS shares opcache memory fairly',
+        ['nginx + php-fpm', 'mORMot + php-fpm', 'FrankenPHP classic', 'FrankenPHP worker'], ['nginx'],
+        {'nginx': [75, 65, 120, 131]}, 150, 25, 'MB', entities=STACKS810)
 
 print('charts written to', OUT)

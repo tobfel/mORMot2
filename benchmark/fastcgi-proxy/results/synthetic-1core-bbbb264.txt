@@ -1,0 +1,7 @@
+bbbb264-head hello.php       c=64    rps=24360.82  avg=2.67ms   p50=2.48ms   p99=5.75ms   non2xx=0      proxyCPU= 98.1% ( 40.2 us/req) phpCPU=104.3% RSS=5MB->42MB HWM=42MB sockerr=[none]
+bbbb264-head big.php?kb=100  c=64    rps=6339.51   avg=10.07ms  p50=9.47ms   p99=18.82ms  non2xx=0      proxyCPU= 99.2% (156.0 us/req) phpCPU= 62.8% RSS=42MB->806MB HWM=819MB sockerr=[none]
+bbbb264-head big.php?kb=1024 c=16    rps=381.84    avg=41.77ms  p50=40.87ms  p99=62.96ms  non2xx=0      proxyCPU= 99.7% (2609.3 us/req) phpCPU= 26.9% RSS=806MB->314MB HWM=996MB sockerr=[none]
+bbbb264-headfix hello.php    c=64    rps=22342.16  avg=2.89ms   p50=2.71ms   p99=6.48ms   non2xx=0      proxyCPU= 97.9% ( 43.6 us/req) phpCPU=103.2% RSS=5MB->11MB HWM=11MB sockerr=[none]
+bbbb264-headfix big.php?kb=100 c=64    rps=6668.88   avg=9.56ms   p50=8.98ms   p99=15.74ms  non2xx=0      proxyCPU= 98.8% (147.5 us/req) phpCPU= 68.3% RSS=11MB->12MB HWM=12MB sockerr=[none]
+bbbb264-headfix big.php?kb=1024 c=16    rps=341.83    avg=46.72ms  p50=46.81ms  p99=64.02ms  non2xx=0      proxyCPU= 99.3% (2901.8 us/req) phpCPU= 27.0% RSS=12MB->27MB HWM=36MB sockerr=[none]
+nginx big.php?kb=100         c=64    rps=10181.25  avg=6.27ms   p50=5.87ms   p99=9.45ms   non2xx=0      proxyCPU= 98.6% ( 96.7 us/req) phpCPU=101.9% RSS=4MB->6MB HWM=6MB sockerr=[none]
