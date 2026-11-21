@@ -131,6 +131,32 @@ laravel/start.sh && laravel/compat.sh && laravel/run-matrix.sh php86 && laravel/
 laravel/stop.sh && laravel/run-php86-ab.sh && synthetic/run-php86-sizes.sh
 ```
 
+### PHP 8.6 ZTS overhead (NTS vs ZTS)
+
+PHP 8.6 makes ZTS (thread-safe) builds faster. ZTS is what FrankenPHP and other threaded SAPIs
+use; php-fpm uses NTS. According to the PHP 8.6.0 `NEWS` and `UPGRADING.INTERNALS`:
+- the engine globals `CG`, `EG`, `SCNG` and `AG` are now compile-time offsets;
+- `AG` and `SCNG` live in native `__thread` storage;
+- PIE executables use the local-exec TLS model;
+- static extensions use `TSRMG_STATIC`.
+
+Wall-clock time is too noisy on this VM to show the difference
+([results/php86-zts-overhead.txt](results/php86-zts-overhead.txt)). The executed instructions,
+counted with valgrind callgrind, are deterministic
+([results/php86-zts-instructions.txt](results/php86-zts-instructions.txt),
+`php/zts-instructions.sh`):
+
+| | `Zend/bench.php` | Laravel 13 JSON request (in a CLI loop, boot excluded) |
+|---|---:|---:|
+| 8.5.12 ZTS vs NTS | +5.0 % instructions | +4.1 % |
+| 8.6.0 ZTS vs NTS | +1.7 % | +1.2 % |
+| 8.6.0 vs 8.5.12, ZTS build | -3.0 % | -2.6 % |
+| 8.6.0 vs 8.5.12, NTS build | +0.2 % | +0.2 % |
+
+The ZTS overhead drops by about two thirds, which helps FrankenPHP; NTS php-fpm is unchanged.
+This does not explain the end-to-end gap of FrankenPHP classic against php-fpm (3-18 % above),
+which comes from its request handling, not from ZTS.
+
 ## Update 2026-11-19: front controller (PR #810) with Laravel 12
 
 Tested source: synopse/mORMot2 master [`9d39b36`](https://github.com/synopse/mORMot2/commit/9d39b36)

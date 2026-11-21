@@ -1,0 +1,4 @@
+php85 nts bench.php=2248570515 instructions, laravel=9483497 instructions/request (boot excluded)
+php85 zts bench.php=2360287264 instructions, laravel=9868520 instructions/request (boot excluded)
+php86 nts bench.php=2252311511 instructions, laravel=9498563 instructions/request (boot excluded)
+php86 zts bench.php=2290184511 instructions, laravel=9616203 instructions/request (boot excluded)
