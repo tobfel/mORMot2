@@ -20,6 +20,7 @@ THEMES = {
 }
 # entity -> categorical slot, identical in every chart
 SLOT = {'nginx': 0, 'mORMot': 1, 'mORMot + fix': 2, 'mORMot master + #810': 2,
+        'mORMot before rework': 1, 'mORMot master': 2,
         'FrankenPHP classic': 3, 'FrankenPHP worker': 4}
 FONT = 'system-ui, -apple-system, Segoe UI, sans-serif'
 
@@ -269,5 +270,35 @@ for mode, th in THEMES.items():
         'front server + PHP workers, welcome page at c=256; PSS shares opcache memory fairly',
         ['nginx + php-fpm', 'mORMot + php-fpm', 'FrankenPHP classic', 'FrankenPHP worker'], ['nginx'],
         {'nginx': [75, 65, 120, 131]}, 150, 25, 'MB', entities=STACKS810)
+
+# update 2026-11-21: PHP 8.6.0, Laravel 13.43, FrankenPHP v1.14.0, mORMot master 883701d
+STACKS86 = ['nginx', 'mORMot master', 'FrankenPHP classic', 'FrankenPHP worker']
+RUNS86 = {  # (min, median, max); nginx and mORMot: 8 runs, FrankenPHP: 3 runs
+    'nginx': [(539.44, 658.1, 755.39), (453.58, 484.3, 557.77), (624.62, 718.9, 789.28)],
+    'mORMot master': [(585.58, 610.1, 729.48), (409.02, 467.9, 560.98), (600.44, 704.6, 789.65)],
+    'FrankenPHP classic': [(532.30, 537.45, 602.22), (439.50, 470.75, 476.41), (569.40, 635.75, 667.55)],
+    'FrankenPHP worker': [(853.03, 934.49, 939.12), (654.48, 691.71, 729.18), (1114.57, 1117.40, 1232.33)],
+}
+for mode, th in THEMES.items():
+    grouped_columns(
+        th, mode, 'php86-laravel-throughput',
+        'PHP 8.6.0 + Laravel 13: requests per second',
+        '3 cores, 12 PHP workers, c=32, pretty URLs; median, whisker = min-max (nginx/mORMot 8 runs, FrankenPHP 3)',
+        ['JSON API (13.7 KB)', 'Blade page (14.5 KB)', 'Welcome page (70 KB)'], STACKS86,
+        {k: [r[1] for r in v] for k, v in RUNS86.items()}, 1400, 200, lambda v: f'{v:,.0f}',
+        ranges={k: [(r[0], r[2]) for r in v] for k, v in RUNS86.items()})
+    grouped_columns(
+        th, mode, 'php86-synthetic-throughput',
+        'Throughput relative to nginx, before and after the rework of master',
+        'PHP 8.6.0, 1 core each, FPC_X64MM, median of 3 runs; nginx = 100 % (dashed line)',
+        ['11 B', '10 KB', '100 KB', '1 MB'], ['mORMot before rework', 'mORMot master'],
+        {'mORMot before rework': [110, 91, 63, 23], 'mORMot master': [114, 105, 102, 28]},
+        120, 20, lambda v: f'{v} %', ref=(100, 'nginx = 100 %', 'nginx'))
+    hbars(
+        th, mode, 'php86-front-cpu', 'Laravel: CPU of the front server per request',
+        'PHP 8.6.0 + Laravel 13, JSON API at c=32, median of 4 runs (one CPU tick = 10 ms, so about +-10 us)',
+        ['nginx', 'mORMot before rework', 'mORMot master'], ['nginx'],
+        {'nginx': [234, 225, 318]}, 400, 100, 'us per request',
+        vfmt=lambda v: f'{v} us', entities=['nginx', 'mORMot before rework', 'mORMot master'])
 
 print('charts written to', OUT)

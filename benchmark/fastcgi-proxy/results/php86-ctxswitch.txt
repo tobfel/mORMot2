@@ -1,0 +1,9 @@
+nginx hello.php: 104407 req, 0/10 context switches per request
+bbbb264+fix hello.php: 118322 req, 50/10 context switches per request
+master883 hello.php: 112468 req, 2/10 context switches per request
+nginx big.php?kb=100: 51830 req, 0/10 context switches per request
+bbbb264+fix big.php?kb=100: 33230 req, 230/10 context switches per request
+master883 big.php?kb=100: 53204 req, 2/10 context switches per request
+nginx big.php?kb=1024: 8148 req, 0/10 context switches per request
+bbbb264+fix big.php?kb=1024: 1821 req, 731/10 context switches per request
+master883 big.php?kb=1024: 2171 req, 44/10 context switches per request

@@ -1,0 +1,43 @@
+# 2026-11-21: PHP 8.6.0, Laravel 13.43.0; 8081 nginx try_files, 8091 mORMot master 883701d (FastCgiIndex=index.php), 8087 FrankenPHP v1.14.0 worker
+GET   /                    8081: 200 70403 text/html; charset=utf-8             md5=b91090eb
+GET   /                    8091: 200 70403 text/html; charset=utf-8             md5=b91090eb
+GET   /                    8087: 200 70403 text/html; charset=utf-8             md5=b91090eb
+GET   /page                8081: 200 14539 text/html; charset=utf-8             md5=0558875e
+GET   /page                8091: 200 14539 text/html; charset=utf-8             md5=0558875e
+GET   /page                8087: 200 14539 text/html; charset=utf-8             md5=0558875e
+GET   /api/items           8081: 200 13755 application/json                     md5=bf6505ab
+GET   /api/items           8091: 200 13755 application/json                     md5=bf6505ab
+GET   /api/items           8087: 200 13755 application/json                     md5=bf6505ab
+GET   /page?x=1&y=2        8081: 200 14539 text/html; charset=utf-8             md5=0558875e
+GET   /page?x=1&y=2        8091: 200 14539 text/html; charset=utf-8             md5=0558875e
+GET   /page?x=1&y=2        8087: 200 14539 text/html; charset=utf-8             md5=0558875e
+GET   /index.php           8081: 200 70403 text/html; charset=utf-8             md5=b91090eb
+GET   /index.php           8091: 200 70403 text/html; charset=utf-8             md5=b91090eb
+GET   /index.php           8087: 200 70403 text/html; charset=utf-8             md5=b91090eb
+GET   /index.php/page      8081: 200 14549 text/html; charset=utf-8             md5=5999c54a
+GET   /index.php/page      8091: 200 14549 text/html; charset=utf-8             md5=5999c54a
+GET   /index.php/page      8087: 200 14549 text/html; charset=utf-8             md5=5999c54a
+GET   /up                  8081: 200 1828 text/html; charset=utf-8              md5=348976ad
+GET   /up                  8091: 200 1827 text/html; charset=utf-8              md5=ea131776
+GET   /up                  8087: 200 1757 text/html; charset=utf-8              md5=262fb46f
+GET   /robots.txt          8081: 200 24 text/plain                              md5=b6216d61
+GET   /robots.txt          8091: 200 24 text/plain;charset=utf-8                md5=b6216d61
+GET   /robots.txt          8087: 200 24 text/plain; charset=utf-8               md5=b6216d61
+GET   /favicon.ico         8081: 200 0 text/plain                               md5=d41d8cd9
+GET   /favicon.ico         8091: 200 0 image/x-icon                             md5=d41d8cd9
+GET   /favicon.ico         8087: 200 0 image/vnd.microsoft.icon                 md5=d41d8cd9
+GET   /nonexistent         8081: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+GET   /nonexistent         8091: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+GET   /nonexistent         8087: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+GET   /some/deep/path      8081: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+GET   /some/deep/path      8091: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+GET   /some/deep/path      8087: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+GET   /build/missing.css   8081: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+GET   /build/missing.css   8091: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+GET   /build/missing.css   8087: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+GET   /storage/x           8081: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+GET   /storage/x           8091: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+GET   /storage/x           8087: 404 6586 text/html; charset=utf-8              md5=e3cbd284
+== 8081: HEAD=200 POST-static=405 POST-/page=405 traversal=400 dotenv=404 range=206/5 IMS=304 INM=304 link=href="http://127.0.0.1:8081"
+== 8091: HEAD=200 POST-static=405 POST-/page=405 traversal=404 dotenv=404 range=206/5 IMS=304 INM=304 link=href="http://127.0.0.1:8091"
+== 8087: HEAD=200 POST-static=405 POST-/page=405 traversal=404 dotenv=404 range=206/5 IMS=304 INM=304 link=href="http://127.0.0.1:8087"

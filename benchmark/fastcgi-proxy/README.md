@@ -3,16 +3,133 @@
 Benchmark of the `fcgi://` source of `THttpProxyServer`, added in
 [synopse/mORMot2#785](https://github.com/synopse/mORMot2/pull/785). It answers the question
 asked in [that PR](https://github.com/synopse/mORMot2/pull/785#issuecomment-6955274832) about
-stability, performance and CPU/RAM usage compared to nginx. The benchmark uses **PHP 8.5.12** with
-php-fpm and FrankenPHP, a synthetic PHP workload, and a real Laravel 12 application.
+stability, performance and CPU/RAM usage compared to nginx. It uses php-fpm and FrankenPHP, a
+synthetic PHP workload, and a real Laravel application. The latest run uses **PHP 8.6.0** with
+Laravel 13; earlier runs used PHP 8.5.12 with Laravel 12.
 
 The fix proposed from these measurements,
 [`b86a573`](https://github.com/synopse/mORMot2/commit/b86a573) "net: release FastCGI connection
 buffers on close", is merged in synopse/mORMot2 master. It was followed by further optimizations
-from Arnaud Bouchez, e.g. `df127cf` "much faster TFastCgiAsyncConnections local connections".
-The front-controller gap found here is addressed by
-[synopse/mORMot2#810](https://github.com/synopse/mORMot2/pull/810) (`FastCgiIndex`), measured in
-the update below.
+from Arnaud Bouchez, e.g. `df127cf` "much faster TFastCgiAsyncConnections local connections" and
+`a1c160f` "FastCGI connections share the TAsyncConnections of the HTTP server". The
+front-controller gap found here is addressed by
+[synopse/mORMot2#810](https://github.com/synopse/mORMot2/pull/810) (`FastCgiIndex`), now merged.
+
+## Update 2026-11-21: PHP 8.6.0, Laravel 13 and mORMot master
+
+| Item | Version or setting |
+|---|---|
+| PHP | 8.6.0, built from the `php-8.6.0` tag: NTS + php-fpm and ZTS + embed, opcache on, JIT off |
+| mORMot 2 | master [`883701d`](https://github.com/synopse/mORMot2/commit/883701d), which includes #810, #811 and `a1c160f`; FPC 3.2.2, `-dFPC_X64MM -dFPCMM_SERVER`, `FastCgiIndex = 'index.php'` |
+| FrankenPHP | v1.14.0 (tagged 2026-11-21, Caddy v2.11.9), built from source against the same PHP 8.6.0 ZTS. The official v1.13.6 binaries and images still embed PHP 8.5.13. |
+| Laravel | **13.43.0** + Octane, with the same benchmark app (controller, views, routes) and settings as before |
+| nginx | 1.24.0 with `try_files $uri $uri/ /index.php?$query_string` |
+
+**Why Laravel 13:** Laravel 12.73.0, its latest release and also the current `12.x` branch, is not
+ready for PHP 8.6. PHP 8.6 warns when a class implements `SessionHandlerInterface` without
+`create_sid()` (required in PHP 9). Laravel 12 turns that warning into an exception, so the
+welcome page returned 500, and `spl_object_hash()` raises deprecations. Laravel 13.43 implements
+`create_sid()` in all its session handlers and runs without any warning on PHP 8.6.
+
+This run was on a different host from the earlier ones: nginx served static files about 15 %
+slower than on 2026-11-19. Compare the figures only within this section.
+
+**Summary**
+- **Compatibility:** with PHP 8.6 and Laravel 13, nginx `try_files`, the mORMot front controller and
+  FrankenPHP returned the same answers ([results/php86-compat.txt](results/php86-compat.txt),
+  `laravel/compat.sh`). The only differences are the same as before: `/up` prints a timing, and
+  path traversal returns 400 with nginx and 404 with the others.
+- **PHP 8.6 vs 8.5:** on the same Laravel 13 app, behind nginx, PHP 8.6.0 is as fast as 8.5.12
+  (0 to +3 %, within noise; [results/php85-vs-86-laravel13.txt](results/php85-vs-86-laravel13.txt)).
+- **Laravel throughput:** nginx and mORMot master are close. At c=32, the median of 8 interleaved
+  runs is 2-7 % in favor of nginx, with largely overlapping ranges. At c=256 they are equal
+  (mORMot vs nginx: 614 vs 615, 526 vs 541 and 710 vs 683 req/s). FrankenPHP worker is 1.4-1.6x faster, and
+  FrankenPHP classic is 3-18 % slower.
+- **Arnaud's rework of master closes the large-response gap.** Synthetic, 1 core: at 100 KB
+  mORMot master reaches **102 % of nginx**, against 63 % before the rework. At 10 KB it reaches
+  105 % (91 % before). Context switches dropped from 23 to 0.2 per request at 100 KB, and from 73
+  to 4.4 at 1 MB. 1 MB responses are still at 28 % of nginx.
+- **One regression to look at:** with a slow backend (Laravel, about 40 ms per request), the
+  master front uses **about 40 % more CPU per request** than before the rework: 318 us against
+  225 us, with nginx at 234 us. It also has 6.3 context switches per request, against 4.6 before
+  and 2.9 for nginx. This is probably the reason for the small c=32 gap above.
+- **Memory and stability:** the mORMot front stays at 7-8 MB RSS under load, against 27 MB for
+  nginx with 3 workers. A 2 min mixed soak at c=100 completed 77,465 requests with 0 errors, at a
+  constant 8 MB RSS with 7 threads.
+- **Static files** (`robots.txt`, c=64): 124 k req/s for mORMot, 96 k for nginx with its default
+  configuration, and 28-29 k for FrankenPHP.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/php86-laravel-throughput-dark.svg">
+  <img alt="PHP 8.6 and Laravel 13 requests per second" src="charts/php86-laravel-throughput-light.svg">
+</picture>
+
+Requests per second at c=32: the median of 8 interleaved runs for nginx and mORMot and of 3 runs
+for FrankenPHP; the full range is in the chart.
+
+| Endpoint | nginx + php-fpm | mORMot master + php-fpm | FrankenPHP classic | FrankenPHP worker |
+|---|---:|---:|---:|---:|
+| JSON API (13.7 KB) | 658 | 610 | 537 | 934 |
+| Blade page (14.5 KB) | 484 | 468 | 471 | 692 |
+| Welcome page (70 KB in Laravel 13) | 719 | 705 | 636 | 1,117 |
+
+Under load at c=256 (one run each):
+
+| | JSON API req/s | p99 | front RSS | stack PSS | front fds | threads |
+|---|---:|---:|---:|---:|---:|---:|
+| nginx (3 workers) + php-fpm | 615 | 528 ms | 27 MB | 76-77 MB | 559-561 | 4 processes |
+| mORMot master + php-fpm | 614 | 467 ms | 7-8 MB | 66-67 MB | 520 | 7 |
+| FrankenPHP classic | 546 | 562 ms | 161 MB | 120 MB | 275-276 | 23 |
+| FrankenPHP worker | 1,022 | 327 ms | 179-181 MB | 139-140 MB | 277 | 37 |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/php86-synthetic-throughput-dark.svg">
+  <img alt="Throughput relative to nginx before and after the rework of master" src="charts/php86-synthetic-throughput-light.svg">
+</picture>
+
+Synthetic PHP scripts on PHP 8.6.0, 1 core per front server, median of 3 interleaved runs
+([results/php86-synthetic-sizes.txt](results/php86-synthetic-sizes.txt),
+[results/php86-ctxswitch.txt](results/php86-ctxswitch.txt)). "Before rework" is `bbbb264` with
+the fix:
+
+| Response | nginx req/s | before rework req/s | master req/s | CPU per request: nginx / before / master | context switches per request: before / master |
+|---|---:|---:|---:|---:|---:|
+| 11 B | 21,070 | 23,229 | 23,923 | 47 / 42 / 41 us | 5.0 / 0.2 |
+| 10 KB | 17,028 | 15,510 | 17,803 | 52 / 58 / 52 us | - |
+| 100 KB | 10,248 | 6,430 | 10,416 | 96 / 153 / 94 us | 23 / 0.2 |
+| 1 MB | 1,561 | 360 | 441 | 632 / 2,750 / 2,250 us | 73 / 4.4 |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/php86-front-cpu-dark.svg">
+  <img alt="Laravel CPU of the front server per request" src="charts/php86-front-cpu-light.svg">
+</picture>
+
+The A/B test of the front servers in front of the same Laravel 13 / PHP 8.6 php-fpm
+([results/php86-ab-rework.txt](results/php86-ab-rework.txt), `laravel/run-php86-ab.sh`):
+
+| JSON API, c=32, 4 interleaved runs | req/s (median) | front CPU | CPU per request | context switches per request |
+|---|---:|---:|---:|---:|
+| nginx | 711 | 16.6-16.8 % | 230-250 us | 2.9-3.0 |
+| mORMot before rework (#810, `29820f9`) | 706 | 15.4-16.3 % | 214-238 us | 4.4-5.0 |
+| mORMot master (`883701d`) | 688 | 20.9-22.9 % | 305-350 us | 6.0-6.8 |
+
+Other raw data:
+[php86-repeat-3x.txt](results/php86-repeat-3x.txt),
+[php86-repeat-5x-nginx-mormot.txt](results/php86-repeat-5x-nginx-mormot.txt),
+[php86-matrix.txt](results/php86-matrix.txt), [php86-static.txt](results/php86-static.txt),
+[php86-soak.txt](results/php86-soak.txt), [php86-soak-wrk.txt](results/php86-soak-wrk.txt).
+
+Reproduce:
+```bash
+PHP_VERSION=8.6.0 php/build-php.sh                      # /opt/php86 and /opt/php86zts
+FRANKENPHP_VERSION=v1.14.0 PHP_ZTS=/opt/php86zts SUFFIX=-1.14-php86 php/build-frankenphp.sh
+MORMOT_ROOT=<mORMot master checkout> proxy/build.sh master883
+LARAVEL_VERSION='13.*' LARAVEL_APP=/srv/laravel13/app PHPX=86 laravel/setup.sh
+export PHPX=86 LARAVEL_APP=/srv/laravel13/app FRANKENPHP=$PWD/php/bin/frankenphp-1.14-php86 \
+       MORMOT_FRONT=$PWD/proxy/bin/fcgiproxy_master883
+laravel/start.sh && laravel/compat.sh && laravel/run-matrix.sh php86 && laravel/run-php86-extra.sh
+laravel/stop.sh && laravel/run-php86-ab.sh && synthetic/run-php86-sizes.sh
+```
 
 ## Update 2026-11-19: front controller (PR #810) with Laravel 12
 

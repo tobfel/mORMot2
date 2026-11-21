@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380" role="img" aria-labelledby="t d"><title id="t">Throughput relative to nginx, before and after the rework of master</title><desc id="d">PHP 8.6.0, 1 core each, FPC_X64MM, median of 3 runs; nginx = 100 % (dashed line)</desc>
+<rect width="760" height="380" rx="8" fill="#1a1a19"/>
+<text x="20.0" y="30.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="16" font-weight="600" fill="#f0efec" text-anchor="start">Throughput relative to nginx, before and after the rework of master</text>
+<text x="20.0" y="50.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#c3c2b7" text-anchor="start">PHP 8.6.0, 1 core each, FPC_X64MM, median of 3 runs; nginx = 100 % (dashed line)</text>
+<rect x="20" y="65" width="10" height="10" rx="2" fill="#d95926"/>
+<text x="35.0" y="74.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#c3c2b7" text-anchor="start">mORMot before rework</text>
+<rect x="197.0" y="65" width="10" height="10" rx="2" fill="#199e70"/>
+<text x="212.0" y="74.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#c3c2b7" text-anchor="start">mORMot master</text>
+<line x1="64.0" y1="328.0" x2="740.0" y2="328.0" stroke="#383835" stroke-width="1"/>
+<text x="56.0" y="332.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">0 %</text>
+<line x1="64.0" y1="288.7" x2="740.0" y2="288.7" stroke="#2c2c2a" stroke-width="1"/>
+<text x="56.0" y="292.7" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">20 %</text>
+<line x1="64.0" y1="249.3" x2="740.0" y2="249.3" stroke="#2c2c2a" stroke-width="1"/>
+<text x="56.0" y="253.3" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">40 %</text>
+<line x1="64.0" y1="210.0" x2="740.0" y2="210.0" stroke="#2c2c2a" stroke-width="1"/>
+<text x="56.0" y="214.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">60 %</text>
+<line x1="64.0" y1="170.7" x2="740.0" y2="170.7" stroke="#2c2c2a" stroke-width="1"/>
+<text x="56.0" y="174.7" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">80 %</text>
+<line x1="64.0" y1="131.3" x2="740.0" y2="131.3" stroke="#2c2c2a" stroke-width="1"/>
+<text x="56.0" y="135.3" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">100 %</text>
+<line x1="64.0" y1="92.0" x2="740.0" y2="92.0" stroke="#2c2c2a" stroke-width="1"/>
+<text x="56.0" y="96.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">120 %</text>
+<path d="M123.5,328.0 V115.7 Q123.5,111.7 127.5,111.7 H143.5 Q147.5,111.7 147.5,115.7 V328.0 Z" fill="#d95926"/>
+<path d="M149.5,328.0 V107.8 Q149.5,103.8 153.5,103.8 H169.5 Q173.5,103.8 173.5,107.8 V328.0 Z" fill="#199e70"/>
+<text x="148.5" y="348.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#c3c2b7" text-anchor="middle">11 B</text>
+<path d="M292.5,328.0 V153.0 Q292.5,149.0 296.5,149.0 H312.5 Q316.5,149.0 316.5,153.0 V328.0 Z" fill="#d95926"/>
+<path d="M318.5,328.0 V125.5 Q318.5,121.5 322.5,121.5 H338.5 Q342.5,121.5 342.5,125.5 V328.0 Z" fill="#199e70"/>
+<text x="317.5" y="348.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#c3c2b7" text-anchor="middle">10 KB</text>
+<path d="M461.5,328.0 V208.1 Q461.5,204.1 465.5,204.1 H481.5 Q485.5,204.1 485.5,208.1 V328.0 Z" fill="#d95926"/>
+<path d="M487.5,328.0 V131.4 Q487.5,127.4 491.5,127.4 H507.5 Q511.5,127.4 511.5,131.4 V328.0 Z" fill="#199e70"/>
+<text x="486.5" y="348.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#c3c2b7" text-anchor="middle">100 KB</text>
+<path d="M630.5,328.0 V286.8 Q630.5,282.8 634.5,282.8 H650.5 Q654.5,282.8 654.5,286.8 V328.0 Z" fill="#d95926"/>
+<path d="M656.5,328.0 V276.9 Q656.5,272.9 660.5,272.9 H676.5 Q680.5,272.9 680.5,276.9 V328.0 Z" fill="#199e70"/>
+<text x="655.5" y="348.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#c3c2b7" text-anchor="middle">1 MB</text>
+<line x1="64.0" y1="131.3" x2="740.0" y2="131.3" stroke="#3987e5" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="740.0" y="125.3" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#c3c2b7" text-anchor="end">nginx = 100 %</text>
+</svg>

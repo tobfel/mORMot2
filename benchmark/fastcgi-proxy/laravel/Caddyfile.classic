@@ -6,6 +6,6 @@
 	}
 }
 :8086 {
-	root * /srv/laravel/app/public
+	root * {$LARAVEL_PUBLIC}
 	php_server
 }

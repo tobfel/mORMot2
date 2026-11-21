@@ -1,0 +1,8 @@
+nginx     /robots.txt          c=64   rps=96132.74 p50=319.00us p99=1.80ms   err=0/- | CPU stack=158% front=158%   16us/req | stack RSS=466MB PSS=77MB fds=207 thr=17 | front RSS=27MB HWM=27MB fds=113 thr=4
+mormot810 /robots.txt          c=64   rps=124032.03 p50=394.00us p99=1.41ms   err=0/- | CPU stack=207% front=207%   17us/req | stack RSS=447MB PSS=67MB fds=165 thr=20 | front RSS=8MB HWM=8MB fds=72 thr=7
+fclassic  /robots.txt          c=64   rps=27988.69 p50=2.09ms   p99=12.08ms  err=0/- | CPU stack=277% front=277%   99us/req | stack RSS=148MB PSS=107MB fds=74 thr=24 | front RSS=148MB HWM=160MB fds=73 thr=24
+fworker   /robots.txt          c=64   rps=29259.92 p50=1.99ms   p99=10.61ms  err=0/- | CPU stack=278% front=278%   95us/req | stack RSS=168MB PSS=128MB fds=86 thr=37 | front RSS=168MB HWM=199MB fds=85 thr=37
+nginx     /favicon.ico         c=64   rps=97245.38 p50=311.00us p99=1.99ms   err=0/- | CPU stack=162% front=162%   17us/req | stack RSS=466MB PSS=77MB fds=208 thr=17 | front RSS=27MB HWM=27MB fds=113 thr=4
+mormot810 /favicon.ico         c=64   rps=109976.20 p50=435.00us p99=1.90ms   err=0/- | CPU stack=196% front=196%   18us/req | stack RSS=447MB PSS=67MB fds=165 thr=20 | front RSS=8MB HWM=8MB fds=72 thr=7
+fclassic  /favicon.ico         c=64   rps=27143.86 p50=2.13ms   p99=15.43ms  err=0/- | CPU stack=275% front=275%  101us/req | stack RSS=148MB PSS=107MB fds=76 thr=24 | front RSS=147MB HWM=160MB fds=73 thr=24
+fworker   /favicon.ico         c=64   rps=29155.13 p50=2.02ms   p99=11.37ms  err=0/- | CPU stack=277% front=277%   95us/req | stack RSS=168MB PSS=128MB fds=91 thr=37 | front RSS=168MB HWM=199MB fds=85 thr=37

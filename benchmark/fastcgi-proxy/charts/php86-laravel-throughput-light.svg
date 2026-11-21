@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380" role="img" aria-labelledby="t d"><title id="t">PHP 8.6.0 + Laravel 13: requests per second</title><desc id="d">3 cores, 12 PHP workers, c=32, pretty URLs; median, whisker = min-max (nginx/mORMot 8 runs, FrankenPHP 3)</desc>
+<rect width="760" height="380" rx="8" fill="#fcfcfb"/>
+<text x="20.0" y="30.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="16" font-weight="600" fill="#0b0b0b" text-anchor="start">PHP 8.6.0 + Laravel 13: requests per second</text>
+<text x="20.0" y="50.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">3 cores, 12 PHP workers, c=32, pretty URLs; median, whisker = min-max (nginx/mORMot 8 runs, FrankenPHP 3)</text>
+<rect x="20" y="65" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="35.0" y="74.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">nginx</text>
+<rect x="89.0" y="65" width="10" height="10" rx="2" fill="#1baf7a"/>
+<text x="104.0" y="74.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">mORMot master</text>
+<rect x="215.60000000000002" y="65" width="10" height="10" rx="2" fill="#eda100"/>
+<text x="230.6" y="74.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">FrankenPHP classic</text>
+<rect x="378.20000000000005" y="65" width="10" height="10" rx="2" fill="#e87ba4"/>
+<text x="393.2" y="74.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">FrankenPHP worker</text>
+<line x1="64.0" y1="328.0" x2="740.0" y2="328.0" stroke="#c3c2b7" stroke-width="1"/>
+<text x="56.0" y="332.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">0</text>
+<line x1="64.0" y1="294.3" x2="740.0" y2="294.3" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56.0" y="298.3" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">200</text>
+<line x1="64.0" y1="260.6" x2="740.0" y2="260.6" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56.0" y="264.6" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">400</text>
+<line x1="64.0" y1="226.9" x2="740.0" y2="226.9" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56.0" y="230.9" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">600</text>
+<line x1="64.0" y1="193.1" x2="740.0" y2="193.1" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56.0" y="197.1" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">800</text>
+<line x1="64.0" y1="159.4" x2="740.0" y2="159.4" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56.0" y="163.4" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">1,000</text>
+<line x1="64.0" y1="125.7" x2="740.0" y2="125.7" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56.0" y="129.7" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">1,200</text>
+<line x1="64.0" y1="92.0" x2="740.0" y2="92.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56.0" y="96.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="11" font-weight="400" fill="#898781" text-anchor="end">1,400</text>
+<path d="M125.7,328.0 V221.1 Q125.7,217.1 129.7,217.1 H145.7 Q149.7,217.1 149.7,221.1 V328.0 Z" fill="#2a78d6"/>
+<line x1="137.7" y1="237.1" x2="137.7" y2="200.7" stroke="#52514e" stroke-width="1"/>
+<line x1="134.7" y1="200.7" x2="140.7" y2="200.7" stroke="#52514e" stroke-width="1"/>
+<line x1="134.7" y1="237.1" x2="140.7" y2="237.1" stroke="#52514e" stroke-width="1"/>
+<path d="M151.7,328.0 V229.2 Q151.7,225.2 155.7,225.2 H171.7 Q175.7,225.2 175.7,229.2 V328.0 Z" fill="#1baf7a"/>
+<line x1="163.7" y1="229.3" x2="163.7" y2="205.0" stroke="#52514e" stroke-width="1"/>
+<line x1="160.7" y1="205.0" x2="166.7" y2="205.0" stroke="#52514e" stroke-width="1"/>
+<line x1="160.7" y1="229.3" x2="166.7" y2="229.3" stroke="#52514e" stroke-width="1"/>
+<path d="M177.7,328.0 V241.4 Q177.7,237.4 181.7,237.4 H197.7 Q201.7,237.4 201.7,241.4 V328.0 Z" fill="#eda100"/>
+<line x1="189.7" y1="238.3" x2="189.7" y2="226.5" stroke="#52514e" stroke-width="1"/>
+<line x1="186.7" y1="226.5" x2="192.7" y2="226.5" stroke="#52514e" stroke-width="1"/>
+<line x1="186.7" y1="238.3" x2="192.7" y2="238.3" stroke="#52514e" stroke-width="1"/>
+<path d="M203.7,328.0 V174.5 Q203.7,170.5 207.7,170.5 H223.7 Q227.7,170.5 227.7,174.5 V328.0 Z" fill="#e87ba4"/>
+<line x1="215.7" y1="184.2" x2="215.7" y2="169.7" stroke="#52514e" stroke-width="1"/>
+<line x1="212.7" y1="169.7" x2="218.7" y2="169.7" stroke="#52514e" stroke-width="1"/>
+<line x1="212.7" y1="184.2" x2="218.7" y2="184.2" stroke="#52514e" stroke-width="1"/>
+<text x="176.7" y="348.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="middle">JSON API (13.7 KB)</text>
+<path d="M351.0,328.0 V250.4 Q351.0,246.4 355.0,246.4 H371.0 Q375.0,246.4 375.0,250.4 V328.0 Z" fill="#2a78d6"/>
+<line x1="363.0" y1="251.5" x2="363.0" y2="234.0" stroke="#52514e" stroke-width="1"/>
+<line x1="360.0" y1="234.0" x2="366.0" y2="234.0" stroke="#52514e" stroke-width="1"/>
+<line x1="360.0" y1="251.5" x2="366.0" y2="251.5" stroke="#52514e" stroke-width="1"/>
+<path d="M377.0,328.0 V253.1 Q377.0,249.1 381.0,249.1 H397.0 Q401.0,249.1 401.0,253.1 V328.0 Z" fill="#1baf7a"/>
+<line x1="389.0" y1="259.1" x2="389.0" y2="233.4" stroke="#52514e" stroke-width="1"/>
+<line x1="386.0" y1="233.4" x2="392.0" y2="233.4" stroke="#52514e" stroke-width="1"/>
+<line x1="386.0" y1="259.1" x2="392.0" y2="259.1" stroke="#52514e" stroke-width="1"/>
+<path d="M403.0,328.0 V252.6 Q403.0,248.6 407.0,248.6 H423.0 Q427.0,248.6 427.0,252.6 V328.0 Z" fill="#eda100"/>
+<line x1="415.0" y1="253.9" x2="415.0" y2="247.7" stroke="#52514e" stroke-width="1"/>
+<line x1="412.0" y1="247.7" x2="418.0" y2="247.7" stroke="#52514e" stroke-width="1"/>
+<line x1="412.0" y1="253.9" x2="418.0" y2="253.9" stroke="#52514e" stroke-width="1"/>
+<path d="M429.0,328.0 V215.4 Q429.0,211.4 433.0,211.4 H449.0 Q453.0,211.4 453.0,215.4 V328.0 Z" fill="#e87ba4"/>
+<line x1="441.0" y1="217.7" x2="441.0" y2="205.1" stroke="#52514e" stroke-width="1"/>
+<line x1="438.0" y1="205.1" x2="444.0" y2="205.1" stroke="#52514e" stroke-width="1"/>
+<line x1="438.0" y1="217.7" x2="444.0" y2="217.7" stroke="#52514e" stroke-width="1"/>
+<text x="402.0" y="348.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="middle">Blade page (14.5 KB)</text>
+<path d="M576.3,328.0 V210.8 Q576.3,206.8 580.3,206.8 H596.3 Q600.3,206.8 600.3,210.8 V328.0 Z" fill="#2a78d6"/>
+<line x1="588.3" y1="222.7" x2="588.3" y2="194.9" stroke="#52514e" stroke-width="1"/>
+<line x1="585.3" y1="194.9" x2="591.3" y2="194.9" stroke="#52514e" stroke-width="1"/>
+<line x1="585.3" y1="222.7" x2="591.3" y2="222.7" stroke="#52514e" stroke-width="1"/>
+<path d="M602.3,328.0 V213.2 Q602.3,209.2 606.3,209.2 H622.3 Q626.3,209.2 626.3,213.2 V328.0 Z" fill="#1baf7a"/>
+<line x1="614.3" y1="226.8" x2="614.3" y2="194.9" stroke="#52514e" stroke-width="1"/>
+<line x1="611.3" y1="194.9" x2="617.3" y2="194.9" stroke="#52514e" stroke-width="1"/>
+<line x1="611.3" y1="226.8" x2="617.3" y2="226.8" stroke="#52514e" stroke-width="1"/>
+<path d="M628.3,328.0 V224.8 Q628.3,220.8 632.3,220.8 H648.3 Q652.3,220.8 652.3,224.8 V328.0 Z" fill="#eda100"/>
+<line x1="640.3" y1="232.0" x2="640.3" y2="215.5" stroke="#52514e" stroke-width="1"/>
+<line x1="637.3" y1="215.5" x2="643.3" y2="215.5" stroke="#52514e" stroke-width="1"/>
+<line x1="637.3" y1="232.0" x2="643.3" y2="232.0" stroke="#52514e" stroke-width="1"/>
+<path d="M654.3,328.0 V143.6 Q654.3,139.6 658.3,139.6 H674.3 Q678.3,139.6 678.3,143.6 V328.0 Z" fill="#e87ba4"/>
+<line x1="666.3" y1="140.1" x2="666.3" y2="120.3" stroke="#52514e" stroke-width="1"/>
+<line x1="663.3" y1="120.3" x2="669.3" y2="120.3" stroke="#52514e" stroke-width="1"/>
+<line x1="663.3" y1="140.1" x2="669.3" y2="140.1" stroke="#52514e" stroke-width="1"/>
+<text x="627.3" y="348.0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#52514e" text-anchor="middle">Welcome page (70 KB)</text>
+</svg>

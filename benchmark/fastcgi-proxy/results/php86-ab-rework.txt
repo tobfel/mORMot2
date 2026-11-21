@@ -1,0 +1,13 @@
+# front CPU in % of one core and front CPU per request in us (100 Hz ticks, so +-10 us)
+nginx rps=718.14 p99=61.15ms front_cpu=16.7% front_us_per_req=232 ctxsw_per_req=2.92
+pr810 rps=681.86 p99=65.65ms front_cpu=16.3% front_us_per_req=238 ctxsw_per_req=4.69
+master883 rps=629.67 p99=72.70ms front_cpu=22.1% front_us_per_req=350 ctxsw_per_req=5.95
+nginx rps=661.80 p99=68.38ms front_cpu=16.6% front_us_per_req=250 ctxsw_per_req=2.97
+pr810 rps=658.14 p99=72.26ms front_cpu=15.4% front_us_per_req=233 ctxsw_per_req=5.02
+master883 rps=682.20 p99=68.60ms front_cpu=20.9% front_us_per_req=306 ctxsw_per_req=6.75
+nginx rps=729.07 p99=60.98ms front_cpu=16.8% front_us_per_req=230 ctxsw_per_req=2.91
+pr810 rps=739.49 p99=61.00ms front_cpu=16.0% front_us_per_req=216 ctxsw_per_req=4.42
+master883 rps=719.56 p99=62.11ms front_cpu=22.0% front_us_per_req=305 ctxsw_per_req=6.11
+nginx rps=703.24 p99=73.25ms front_cpu=16.6% front_us_per_req=235 ctxsw_per_req=3.00
+pr810 rps=731.15 p99=63.98ms front_cpu=15.7% front_us_per_req=214 ctxsw_per_req=4.45
+master883 rps=693.94 p99=68.66ms front_cpu=22.9% front_us_per_req=329 ctxsw_per_req=6.46

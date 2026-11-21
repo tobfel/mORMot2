@@ -4,13 +4,13 @@
 	frankenphp {
 		num_threads 12
 		worker {
-			file /srv/laravel/app/public/frankenphp-worker.php
+			file {$LARAVEL_PUBLIC}/frankenphp-worker.php
 			num 12
 		}
 	}
 }
 :8087 {
-	root * /srv/laravel/app/public
+	root * {$LARAVEL_PUBLIC}
 	php_server {
 		index frankenphp-worker.php
 		try_files {path} frankenphp-worker.php
